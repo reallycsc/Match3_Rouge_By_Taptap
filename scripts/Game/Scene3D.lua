@@ -523,11 +523,27 @@ function CreateItemNode3D(kind, row, col, turns)
     model.castShadows = true
 
     local badge = node:CreateChild("TurnsBadge")
-    badge.position = Vector3(0, 0.68, 0)
-    badge.scale = Vector3(0.16 + turns * 0.02, 0.08, 0.16 + turns * 0.02)
-    local badgeModel = badge:CreateComponent("StaticModel")
-    badgeModel:SetModel(cache:GetResource("Model", "Models/Sphere.mdl"))
-    badgeModel:SetMaterial(CreatePBRMaterial3D("turn_badge", Color(1.0, 0.92, 0.45, 1.0), 0.0, 0.18, 1.4))
+    badge.position = Vector3(0, 0.88, 0)
+    badge.scale = Vector3(0.24, 0.24, 0.24)
+    badge.rotation = Quaternion(90, Vector3.RIGHT)
+
+    local badgeBg = badge:CreateChild("TurnsBadgeBackground")
+    badgeBg.position = Vector3(0, -0.012, 0)
+    badgeBg.scale = Vector3(1.45, 0.12, 1.45)
+    local badgeModel = badgeBg:CreateComponent("StaticModel")
+    badgeModel:SetModel(cache:GetResource("Model", "Models/Cylinder.mdl"))
+    badgeModel:SetMaterial(CreatePBRMaterial3D("turn_badge_bg", Color(0.10, 0.06, 0.03, 1.0), 0.0, 0.2, 0.55))
+    badgeModel.castShadows = false
+
+    local textNode = badge:CreateChild("TurnsBadgeText")
+    textNode.position = Vector3(0, 0.02, 0)
+    textNode.scale = Vector3(0.018, 0.018, 0.018)
+    local text = textNode:CreateComponent("Text3D")
+    text:SetFont("Fonts/MiSans-Regular.ttf", 34)
+    text:SetAlignment(HA_CENTER, VA_CENTER)
+    text:SetTextAlignment(HA_CENTER)
+    text:SetColor(Color(1.0, 0.92, 0.38, 1.0))
+    text:SetText(tostring(math.max(0, turns or 0)))
     return node
 end
 
@@ -582,6 +598,31 @@ function ScreenToBoardCell3D(inputX, inputY)
     local row = math.floor(center - hitZ / cellSize + 0.5)
     if not IsValidCell(row, col) then return nil end
     return { row = row, col = col }
+end
+
+function WorldToHudPoint3D(worldPos)
+    if camera3D_ == nil or worldPos == nil then return nil end
+    local screenPos = camera3D_:WorldToScreenPoint(worldPos)
+    if screenPos.x < -0.1 or screenPos.x > 1.1 or screenPos.y < -0.1 or screenPos.y > 1.1 then return nil end
+    return {
+        x = screenPos.x * screenW_,
+        y = screenPos.y * screenH_,
+    }
+end
+
+function MonsterCenterHudPoint3D(monster)
+    if monster == nil then return nil end
+    for index, candidate in ipairs(monsters_) do
+        if candidate == monster then
+            local entry = monsterNodes3D_[index]
+            if entry ~= nil and entry.node ~= nil then
+                return WorldToHudPoint3D(entry.node.worldPosition + Vector3(0, 0.36, 0))
+            end
+            break
+        end
+    end
+    local fallback = BoardToWorld(monster.row, monster.col)
+    return WorldToHudPoint3D(Vector3(fallback.x, CONFIG.visual3D.floorY + 0.36, fallback.z))
 end
 
 function MarkMonsterAttack3D(monster)

@@ -270,6 +270,13 @@ function UpdateEffects(timeStep)
     for i = #cannonShells_, 1, -1 do
         local item = cannonShells_[i]
         item.life = item.life - timeStep
+        if item.targetMonster ~= nil and item.targetMonster.hp > 0 and MonsterCenterHudPoint3D ~= nil then
+            local centerPoint = MonsterCenterHudPoint3D(item.targetMonster)
+            if centerPoint ~= nil then
+                item.toX = centerPoint.x
+                item.toY = centerPoint.y
+            end
+        end
         local t = 1 - Clamp(item.life / item.maxLife, 0, 1)
         item.x = Lerp(item.fromX, item.toX, EaseInOut(t))
         item.y = Lerp(item.fromY, item.toY, EaseInOut(t))
