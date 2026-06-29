@@ -871,6 +871,19 @@ function DamageMonster(monster, amount, label)
     AddParticles(monster.row, monster.col, { 255, 84, 42, 255 }, 14)
 end
 
+function FindLaserTarget(trap)
+    if trap == nil then return nil end
+    for _, monster in ipairs(monsters_) do
+        if monster.hp > 0 then
+            if (trap.kind == "laserH" and monster.row == trap.row)
+                or (trap.kind == "laserV" and monster.col == trap.col) then
+                return monster
+            end
+        end
+    end
+    return nil
+end
+
 function FindNearestMonster(trap)
     local nearest = nil
     local nearestDist = 999
@@ -917,6 +930,18 @@ function UpdateMissileSiloTargets()
 end
 
 function UpdateAutoAimTargets()
+    for _, trap in ipairs(traps_) do
+        if trap.kind == "laserH" or trap.kind == "laserV" then
+            local target = FindLaserTarget(trap)
+            if target then
+                trap.targetRow = target.row
+                trap.targetCol = target.col
+            else
+                trap.targetRow = nil
+                trap.targetCol = nil
+            end
+        end
+    end
     UpdateTurretAngles()
     UpdateMissileSiloTargets()
 end
@@ -951,7 +976,12 @@ end
 
 function AddCannonShell(trap, monster)
     local sx, sy = CellCenter(trap.row, trap.col)
+    local centerPoint = MonsterCenterHudPoint3D ~= nil and MonsterCenterHudPoint3D(monster) or nil
     local tx, ty = CellCenter(monster.row, monster.col)
+    if centerPoint ~= nil then
+        tx = centerPoint.x
+        ty = centerPoint.y
+    end
     table.insert(cannonShells_, {
         x = sx,
         y = sy,
@@ -959,6 +989,7 @@ function AddCannonShell(trap, monster)
         fromY = sy,
         toX = tx,
         toY = ty,
+        targetMonster = monster,
         life = 0.5,
         maxLife = 0.5,
     })

@@ -290,17 +290,34 @@ function DrawLaserBeams(ctx)
             y1 = Lerp(sy, boardY_, progress)
             y2 = Lerp(sy, boardY_ + boardPixels_, progress)
         end
+
+        local glowWidth = 14 + math.sin(progress * math.pi) * 8
         nvgBeginPath(ctx)
         nvgMoveTo(ctx, x1, y1)
         nvgLineTo(ctx, x2, y2)
-        nvgStrokeColor(ctx, nvgRGBA(255, 32, 28, alpha))
-        nvgStrokeWidth(ctx, 5)
+        nvgStrokeColor(ctx, nvgRGBA(255, 32, 28, math.floor(alpha * 0.24)))
+        nvgStrokeWidth(ctx, glowWidth)
         nvgStroke(ctx)
-        if progress > 0.82 then
+
+        nvgBeginPath(ctx)
+        nvgMoveTo(ctx, x1, y1)
+        nvgLineTo(ctx, x2, y2)
+        nvgStrokeColor(ctx, nvgRGBA(255, 20, 16, alpha))
+        nvgStrokeWidth(ctx, 6)
+        nvgStroke(ctx)
+
+        nvgBeginPath(ctx)
+        nvgMoveTo(ctx, x1, y1)
+        nvgLineTo(ctx, x2, y2)
+        nvgStrokeColor(ctx, nvgRGBA(255, 214, 180, math.floor(alpha * 0.88)))
+        nvgStrokeWidth(ctx, 1.8)
+        nvgStroke(ctx)
+
+        if progress > 0.72 then
             nvgBeginPath(ctx)
-            nvgCircle(ctx, tx, ty, tile_ * (0.28 + (1 - t) * 0.18))
-            nvgStrokeColor(ctx, nvgRGBA(255, 210, 120, alpha))
-            nvgStrokeWidth(ctx, 3)
+            nvgCircle(ctx, tx, ty, tile_ * (0.28 + progress * 0.2))
+            nvgStrokeColor(ctx, nvgRGBA(255, 50, 38, alpha))
+            nvgStrokeWidth(ctx, 4)
             nvgStroke(ctx)
         end
     end
@@ -340,6 +357,50 @@ function DrawBombExplosions(ctx)
     end
 end
 
+function DrawLaserAimLine(ctx, trap)
+    local cx, cy = CellCenter(trap.row, trap.col)
+    local pulse = 0.5 + 0.5 * math.sin(time_ * 8.5)
+    local alpha = 92 + math.floor(pulse * 80)
+    local targetAlpha = trap.targetRow ~= nil and 235 or 135
+
+    nvgBeginPath(ctx)
+    if trap.kind == "laserH" then
+        nvgMoveTo(ctx, boardX_, cy)
+        nvgLineTo(ctx, boardX_ + boardPixels_, cy)
+    else
+        nvgMoveTo(ctx, cx, boardY_)
+        nvgLineTo(ctx, cx, boardY_ + boardPixels_)
+    end
+    nvgStrokeColor(ctx, nvgRGBA(255, 64, 56, alpha))
+    nvgStrokeWidth(ctx, 1.4 + pulse * 1.3)
+    nvgStroke(ctx)
+
+    nvgBeginPath(ctx)
+    if trap.kind == "laserH" then
+        nvgMoveTo(ctx, boardX_, cy - 5)
+        nvgLineTo(ctx, boardX_ + boardPixels_, cy - 5)
+        nvgMoveTo(ctx, boardX_, cy + 5)
+        nvgLineTo(ctx, boardX_ + boardPixels_, cy + 5)
+    else
+        nvgMoveTo(ctx, cx - 5, boardY_)
+        nvgLineTo(ctx, cx - 5, boardY_ + boardPixels_)
+        nvgMoveTo(ctx, cx + 5, boardY_)
+        nvgLineTo(ctx, cx + 5, boardY_ + boardPixels_)
+    end
+    nvgStrokeColor(ctx, nvgRGBA(255, 36, 32, math.floor(alpha * 0.38)))
+    nvgStrokeWidth(ctx, 1.0)
+    nvgStroke(ctx)
+
+    if trap.targetRow ~= nil and trap.targetCol ~= nil then
+        local tx, ty = CellCenter(trap.targetRow, trap.targetCol)
+        nvgBeginPath(ctx)
+        nvgCircle(ctx, tx, ty, tile_ * (0.24 + pulse * 0.06))
+        nvgStrokeColor(ctx, nvgRGBA(255, 58, 42, targetAlpha))
+        nvgStrokeWidth(ctx, 2.2)
+        nvgStroke(ctx)
+    end
+end
+
 function DrawAimLine(ctx, fromRow, fromCol, targetRow, targetCol, color)
     if targetRow == nil or targetCol == nil then return end
     local sx, sy = CellCenter(fromRow, fromCol)
@@ -363,7 +424,9 @@ end
 
 function DrawAutoAimLines(ctx)
     for _, trap in ipairs(traps_) do
-        if trap.kind == "turret" then
+        if trap.kind == "laserH" or trap.kind == "laserV" then
+            DrawLaserAimLine(ctx, trap)
+        elseif trap.kind == "turret" then
             DrawAimLine(ctx, trap.row, trap.col, trap.targetRow, trap.targetCol, { 255, 214, 92, 1.0 })
         end
     end
