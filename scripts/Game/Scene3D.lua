@@ -21,6 +21,21 @@ function CreatePBRMaterial3D(name, color, metallic, roughness, emissiveMul)
     return mat
 end
 
+function CreatePBRAlphaMaterial3D(name, color, metallic, roughness, emissiveMul)
+    if materials3D_[name] ~= nil then return materials3D_[name] end
+    local mat = Material:new()
+    mat:SetTechnique(0, cache:GetResource("Technique", "Techniques/PBR/PBRNoTextureAlpha.xml"))
+    mat:SetShaderParameter("MatDiffColor", Variant(color))
+    mat:SetShaderParameter("MatSpecColor", Variant(Color(0.45, 0.45, 0.45, 1.0)))
+    mat:SetShaderParameter("Metallic", Variant(metallic or 0.0))
+    mat:SetShaderParameter("Roughness", Variant(roughness or 0.6))
+    if emissiveMul and emissiveMul > 0 then
+        mat:SetShaderParameter("MatEmissiveColor", Variant(Color(color.r * emissiveMul, color.g * emissiveMul, color.b * emissiveMul)))
+    end
+    materials3D_[name] = mat
+    return mat
+end
+
 function GetRuneMaterial3D(gemType)
     local color = ToColor255(GEM_COLORS[gemType] or { 255, 255, 255, 255 })
     return CreatePBRMaterial3D("rune_" .. tostring(gemType), color, 0.0, 0.28, 0.45)
@@ -47,14 +62,32 @@ function BoardToWorldAt(row, col, y)
     return Vector3(p.x, y, p.z)
 end
 
+function ConfigureSceneLight3D(lightGroup)
+    if lightGroup == nil or cameraNode3D_ == nil then return end
+    local lightNodes = lightGroup:GetChildrenWithComponent("Light", true)
+    local target = CONFIG.visual3D.cameraTarget
+    local source = target - cameraNode3D_.worldRight * 8.0 + cameraNode3D_.worldUp * 6.0
+    local destination = target + cameraNode3D_.worldRight * 5.0 - cameraNode3D_.worldUp * 4.0
+    for _, node in ipairs(lightNodes) do
+        local light = node:GetComponent("Light")
+        if light ~= nil and light.lightType == LIGHT_DIRECTIONAL then
+            node.position = source
+            node:LookAt(destination)
+            sceneLightNode3D_ = node
+            return
+        end
+    end
+end
+
 function CreateScene3D()
     scene3D_ = Scene:new()
     scene3D_:CreateComponent("Octree")
     scene3D_:CreateComponent("DebugRenderer")
 
+    local lightGroup = nil
     local lightGroupFile = cache:GetResource("XMLFile", CONFIG.visual3D.lightGroup)
     if lightGroupFile ~= nil then
-        local lightGroup = scene3D_:CreateChild("LightGroup")
+        lightGroup = scene3D_:CreateChild("LightGroup")
         lightGroup:LoadXML(lightGroupFile:GetRoot())
         local zone = lightGroup:GetComponent("Zone", true)
         if zone ~= nil then
@@ -70,6 +103,7 @@ function CreateScene3D()
     camera3D_.nearClip = 0.1
     camera3D_.farClip = 90.0
     camera3D_.fov = 43.0
+    ConfigureSceneLight3D(lightGroup)
     renderer:SetViewport(0, Viewport:new(scene3D_, camera3D_))
     renderer.hdrRendering = true
 
@@ -135,73 +169,81 @@ function ApplyModelMaterials3D(model, materials, fallbackMaterial)
     end
 end
 
-function CreateHealthDisplay3D(parent, name, radius, topY, fillColor)
-    local root = parent:CreateChild(name .. "HealthDisplay")
-    root.position = Vector3(0, topY, 0)
-
-    local bgNode = root:CreateChild("HealthBackground")
-    local bg = bgNode:CreateComponent("StaticModel")
-    bg:SetModel(cache:GetResource("Model", "Models/Cylinder.mdl"))
-    bg:SetMaterial(CreatePBRMaterial3D(name .. "_hp_bg", Color(0.10, 0.10, 0.10, 1.0), 0.0, 0.55, 0.0))
-    bgNode.scale = Vector3(radius * 2.08, 0.035, radius * 2.08)
-
-    local wedgeNode = root:CreateChild("HealthWedge")
-    wedgeNode.position = Vector3(0, 0.026, 0)
-    local wedge = wedgeNode:CreateComponent("CustomGeometry")
-    wedge.dynamic = true
-    wedge:SetNumGeometries(1)
-    wedge:SetMaterial(CreatePBRMaterial3D(name .. "_hp_fill", fillColor, 0.0, 0.45, 0.25))
-
-    local textNode = root:CreateChild("HealthText")
-    textNode.position = Vector3(0, 0.082, 0)
-    textNode.rotation = Quaternion(90, Vector3.RIGHT)
-    textNode.scale = Vector3(0.012, 0.012, 0.012)
-    local text = textNode:CreateComponent("Text3D")
-    text:SetFont("Fonts/MiSans-Regular.ttf", 28)
-    text:SetAlignment(HA_CENTER, VA_CENTER)
-    text:SetTextAlignment(HA_CENTER)
-    text:SetColor(Color(1.0, 1.0, 1.0, 1.0))
-    text:SetText("0")
-
-    return {
-        root = root,
-        wedge = wedge,
-        text = text,
-        radius = radius,
-    }
+function AddMonsterDeathBurst3D(row, col)
+    if boardRoot3D_ == nil then return end
+    local origin = BoardToWorld(row, col)
+    local burst = { life = 0.72, maxLife = 0.72, shards = {} }
+    local mat = CreatePBRMaterial3D("monster_shard", Color(0.9, 0.08, 0.04, 1.0), 0.0, 0.5, 0.45)
+    for i = 1, 14 do
+        local angle = (i / 14) * math.pi * 2
+        local speed = 1.3 + (i % 5) * 0.22
+        local node = boardRoot3D_:CreateChild("MonsterDeathShard3D")
+        node.position = Vector3(origin.x, CONFIG.visual3D.floorY + 0.34, origin.z)
+        node.scale = Vector3(0.12 + (i % 3) * 0.025, 0.08 + (i % 2) * 0.025, 0.12 + (i % 4) * 0.018)
+        node.rotation = Quaternion(i * 23, Vector3.UP)
+        local model = node:CreateComponent("StaticModel")
+        model:SetModel(cache:GetResource("Model", "Models/Box.mdl"))
+        model:SetMaterial(mat)
+        table.insert(burst.shards, {
+            node = node,
+            velocity = Vector3(math.cos(angle) * speed, 1.8 + (i % 4) * 0.18, math.sin(angle) * speed),
+            spin = 160 + i * 17,
+        })
+    end
+    table.insert(monsterDeathBursts3D_, burst)
 end
 
-function UpdateHealthDisplay3D(display, hp, maxHp)
-    if display == nil then return end
-    local rate = Clamp((hp or 0) / math.max(1, maxHp or 1), 0, 1)
-    local segments = math.max(3, math.ceil(36 * rate))
-    local radius = display.radius
-    display.wedge:Clear()
-    display.wedge:SetNumGeometries(1)
-    display.wedge:BeginGeometry(0, TRIANGLE_LIST)
-    if rate > 0 then
-        local startAngle = -math.pi * 0.5
-        local totalAngle = math.pi * 2 * rate
-        for i = 1, segments do
-            local a1 = startAngle + totalAngle * (i - 1) / segments
-            local a2 = startAngle + totalAngle * i / segments
-            display.wedge:DefineVertex(Vector3(0, 0, 0))
-            display.wedge:DefineNormal(Vector3.UP)
-            display.wedge:DefineVertex(Vector3(math.cos(a1) * radius, 0, math.sin(a1) * radius))
-            display.wedge:DefineNormal(Vector3.UP)
-            display.wedge:DefineVertex(Vector3(math.cos(a2) * radius, 0, math.sin(a2) * radius))
-            display.wedge:DefineNormal(Vector3.UP)
+function UpdateMonsterDeathBursts3D(timeStep)
+    for i = #monsterDeathBursts3D_, 1, -1 do
+        local burst = monsterDeathBursts3D_[i]
+        burst.life = burst.life - timeStep
+        local alive = burst.life > 0
+        for _, shard in ipairs(burst.shards) do
+            if shard.node ~= nil then
+                shard.velocity = Vector3(shard.velocity.x, shard.velocity.y - 4.5 * timeStep, shard.velocity.z)
+                shard.node.position = shard.node.position + shard.velocity * timeStep
+                shard.node:Rotate(Quaternion(shard.spin * timeStep, Vector3(1, 1, 0)))
+                local scale = math.max(0.05, burst.life / burst.maxLife)
+                shard.node.scale = Vector3(scale, scale, scale)
+                if not alive then
+                    shard.node:Remove()
+                    shard.node = nil
+                end
+            end
         end
-    else
-        display.wedge:DefineVertex(Vector3(0, 0, 0))
-        display.wedge:DefineNormal(Vector3.UP)
-        display.wedge:DefineVertex(Vector3(0.001, 0, 0))
-        display.wedge:DefineNormal(Vector3.UP)
-        display.wedge:DefineVertex(Vector3(0, 0, 0.001))
-        display.wedge:DefineNormal(Vector3.UP)
+        if not alive then
+            table.remove(monsterDeathBursts3D_, i)
+        end
     end
-    display.wedge:Commit()
-    display.text:SetText(tostring(math.max(0, math.floor(hp or 0))))
+end
+
+function TryPlayAnimation3D(controller, path, loop, fadeTime)
+    if controller == nil or path == nil or path == "" then return false end
+    local anim = cache:GetResource("Animation", path, false)
+    if anim == nil then
+        return false
+    end
+    controller:PlayExclusive(path, 0, loop == true, fadeTime or 0.18)
+    return true
+end
+
+function PlayHeroAnimation3D(name, loop)
+    local cfg = CONFIG.visual3D.hero
+    local path = cfg.animations and cfg.animations[name] or nil
+    if heroCurrentAnim3D_ == path and loop then return end
+    if TryPlayAnimation3D(heroAnimController3D_, path, loop, 0.16) then
+        heroCurrentAnim3D_ = path
+    end
+end
+
+function CreateHeroArrow3D()
+    heroArrowNode3D_ = boardRoot3D_:CreateChild("HeroDownArrow3D")
+    heroArrowNode3D_.scale = Vector3(0.42, 0.68, 0.42)
+    heroArrowNode3D_.rotation = Quaternion(180, Vector3.RIGHT)
+    local model = heroArrowNode3D_:CreateComponent("StaticModel")
+    model:SetModel(cache:GetResource("Model", "Models/Cone.mdl"))
+    model:SetMaterial(CreatePBRMaterial3D("hero_down_arrow", Color(1.0, 0.82, 0.08, 1.0), 0.1, 0.22, 1.6))
+    model.castShadows = false
 end
 
 function CreateHero3D()
@@ -209,11 +251,25 @@ function CreateHero3D()
     heroNode3D_ = boardRoot3D_:CreateChild("ReplaceableHeroModel")
     heroNode3D_.scale = Vector3(cfg.scale, cfg.scale, cfg.scale)
     heroNode3D_.rotation = Quaternion(cfg.yaw or 0, Vector3.UP)
-    heroModel3D_ = heroNode3D_:CreateComponent("StaticModel")
-    heroModel3D_:SetModel(cache:GetResource("Model", cfg.model))
-    ApplyModelMaterials3D(heroModel3D_, cfg.materials, CreatePBRMaterial3D("hero_body", Color(0.45, 0.45, 0.45, 1.0), 0.0, 0.55, 0.0))
+    heroModel3D_ = heroNode3D_:CreateComponent("AnimatedModel")
+    local heroModel = cache:GetResource("Model", cfg.model, false)
+    if heroModel == nil then
+        print("Hero model not available, fallback to cylinder: " .. tostring(cfg.model))
+        heroModel3D_:Remove()
+        heroModel3D_ = heroNode3D_:CreateComponent("StaticModel")
+        heroModel = cache:GetResource("Model", "Models/Cylinder.mdl")
+    end
+    heroModel3D_:SetModel(heroModel)
+    local heroFallback = (heroModel == cache:GetResource("Model", "Models/Cylinder.mdl")) and CreatePBRMaterial3D("hero_body", Color(0.45, 0.45, 0.45, 1.0), 0.0, 0.55, 0.0) or nil
+    ApplyModelMaterials3D(heroModel3D_, cfg.materials, heroFallback)
     heroModel3D_.castShadows = true
-    heroHealthDisplay3D_ = CreateHealthDisplay3D(heroNode3D_, "hero", 0.42, 0.58, Color(0.25, 0.85, 0.25, 1.0))
+    heroAnimController3D_ = nil
+    heroCurrentAnim3D_ = nil
+    if heroFallback == nil then
+        heroAnimController3D_ = heroNode3D_:GetOrCreateComponent("AnimationController")
+        PlayHeroAnimation3D("idle", true)
+    end
+    CreateHeroArrow3D()
 end
 
 function CreateRuneGrid3D()
@@ -271,6 +327,14 @@ function SetRuneNodeType3D(row, col, gemType)
     local model = runeModels3D_[row] and runeModels3D_[row][col]
     if node == nil or model == nil then return end
     local icons = runeIconNodes3D_[row] and runeIconNodes3D_[row][col] or {}
+    if IsActorCell3D(row, col) then
+        node.enabled = false
+        model.enabled = false
+        for _, iconNode in pairs(icons) do
+            iconNode.enabled = false
+        end
+        return
+    end
     if gemType == nil or gemType == 0 then
         node.enabled = false
         model.enabled = false
@@ -365,6 +429,19 @@ function ApplyRuneAnimation3D()
         SetRuneNodeType3D(anim.b.row, anim.b.col, anim.typeA)
         SetRuneNodeTransform3D(anim.a.row, anim.a.col, Vector3(Lerp(aFrom.x, bFrom.x, eased), y, Lerp(aFrom.z, bFrom.z, eased)), 1.06)
         SetRuneNodeTransform3D(anim.b.row, anim.b.col, Vector3(Lerp(bFrom.x, aFrom.x, eased), y, Lerp(bFrom.z, aFrom.z, eased)), 1.06)
+    elseif anim.kind == "itemSwapTrigger" then
+        local eased = EaseInOut(t)
+        local aFrom = BoardToWorld(anim.a.row, anim.a.col)
+        local bFrom = BoardToWorld(anim.b.row, anim.b.col)
+        local y = CONFIG.visual3D.floorY + CONFIG.visual3D.runeHeight * 0.5 + math.sin(t * math.pi) * 0.12
+        if anim.objA.kind == "gem" then
+            SetRuneNodeType3D(anim.a.row, anim.a.col, anim.objA.gemType)
+            SetRuneNodeTransform3D(anim.a.row, anim.a.col, Vector3(Lerp(aFrom.x, bFrom.x, eased), y, Lerp(aFrom.z, bFrom.z, eased)), 1.06)
+        end
+        if anim.objB.kind == "gem" then
+            SetRuneNodeType3D(anim.b.row, anim.b.col, anim.objB.gemType)
+            SetRuneNodeTransform3D(anim.b.row, anim.b.col, Vector3(Lerp(bFrom.x, aFrom.x, eased), y, Lerp(bFrom.z, aFrom.z, eased)), 1.06)
+        end
     elseif anim.kind == "clear" then
         local pulse = 1.0 + math.sin(t * math.pi) * 0.35
         for _, cell in ipairs(anim.matches or {}) do
@@ -374,14 +451,21 @@ function ApplyRuneAnimation3D()
         local eased = EaseOutBack(t)
         for _, drop in ipairs(anim.drops or {}) do
             local from = BoardToWorld(drop.fromRow, drop.fromCol)
-            if drop.fromRow < 1 then
-                local spawn = BoardToWorld(1, drop.fromCol)
-                from = Vector3(spawn.x, CONFIG.visual3D.floorY + CONFIG.visual3D.runeHeight * 0.5, spawn.z + CONFIG.visual3D.cellSize * math.abs(drop.fromRow))
-            end
+            from = Vector3(from.x, CONFIG.visual3D.floorY + CONFIG.visual3D.runeHeight * 0.5, from.z)
             local to = BoardToWorld(drop.toRow, drop.toCol)
             SetRuneNodeType3D(drop.toRow, drop.toCol, drop.type)
             SetRuneNodeTransform3D(drop.toRow, drop.toCol, Vector3(Lerp(from.x, to.x, eased), Lerp(from.y, CONFIG.visual3D.floorY + CONFIG.visual3D.runeHeight * 0.5, eased), Lerp(from.z, to.z, eased)), 1.0)
         end
+    end
+end
+
+function PlayMonsterAnimation3D(entry, name, loop)
+    if entry == nil or entry.animController == nil then return end
+    local cfg = CONFIG.visual3D.monster
+    local path = cfg.animations and cfg.animations[name] or nil
+    if entry.currentAnim == path and loop then return end
+    if TryPlayAnimation3D(entry.animController, path, loop, 0.12) then
+        entry.currentAnim = path
     end
 end
 
@@ -391,12 +475,14 @@ function EnsureMonsterNodes3D()
         local cfg = CONFIG.visual3D.monster
         node.scale = Vector3(cfg.scale, cfg.scale, cfg.scale)
         node.rotation = Quaternion(cfg.yaw or 0, Vector3.UP)
-        local model = node:CreateComponent("StaticModel")
+        local model = node:CreateComponent("AnimatedModel")
         model:SetModel(cache:GetResource("Model", cfg.model))
         ApplyModelMaterials3D(model, cfg.materials, CreatePBRMaterial3D("monster_body", Color(0.95, 0.08, 0.06, 1.0), 0.0, 0.46, 0.25))
         model.castShadows = true
-        local healthDisplay = CreateHealthDisplay3D(node, "monster", 0.42, 0.58, Color(0.95, 0.08, 0.06, 1.0))
-        table.insert(monsterNodes3D_, { node = node, model = model, healthDisplay = healthDisplay })
+        local animController = node:GetOrCreateComponent("AnimationController")
+        local entry = { node = node, model = model, animController = animController, currentAnim = nil }
+        table.insert(monsterNodes3D_, entry)
+        PlayMonsterAnimation3D(entry, "idle", true)
     end
     while #monsterNodes3D_ > #monsters_ do
         local entry = table.remove(monsterNodes3D_)
@@ -411,6 +497,12 @@ function FindMonsterMoveVisual(monster)
     return nil
 end
 
+function PickCycledAnimation3D(actor, names)
+    actor.animCycleIndex = (actor.animCycleIndex or 0) + 1
+    local index = (actor.animCycleIndex - 1) % #names + 1
+    return names[index]
+end
+
 function UpdateMonsterVisuals3D(timeStep)
     EnsureMonsterNodes3D()
     for index, monster in ipairs(monsters_) do
@@ -422,6 +514,7 @@ function UpdateMonsterVisuals3D(timeStep)
             local move = FindMonsterMoveVisual(monster)
             local movePulse = 0
             if move ~= nil then
+                PlayMonsterAnimation3D(entry, "walk", true)
                 local t = 1 - Clamp(move.life / move.maxLife, 0, 1)
                 local eased = EaseInOut(t)
                 local from = BoardToWorld(move.fromRow, move.fromCol)
@@ -430,6 +523,10 @@ function UpdateMonsterVisuals3D(timeStep)
                 movePulse = math.sin(t * math.pi) * 0.24
             end
             if monster.attackFlash ~= nil and monster.attackFlash > 0 then
+                if monster.attackAnim3D == nil then
+                    monster.attackAnim3D = PickCycledAnimation3D(monster, { "attackMeleeRight", "attackMeleeLeft", "attackKickRight", "attackKickLeft" })
+                end
+                PlayMonsterAnimation3D(entry, monster.attackAnim3D, false)
                 monster.attackFlash = math.max(0, monster.attackFlash - timeStep)
                 local heroPos = BoardToWorld(hero_.row, hero_.col)
                 local attackT = monster.attackFlash / 0.36
@@ -442,11 +539,15 @@ function UpdateMonsterVisuals3D(timeStep)
                 end
                 node.scale = Vector3(CONFIG.visual3D.monster.scale * (1.0 + lunge * 0.22), CONFIG.visual3D.monster.scale * (1.0 - lunge * 0.1), CONFIG.visual3D.monster.scale * (1.0 + lunge * 0.22))
             else
+                monster.attackAnim3D = nil
+                if move == nil then
+                    PlayMonsterAnimation3D(entry, "idle", true)
+                end
                 node.scale = Vector3(CONFIG.visual3D.monster.scale, CONFIG.visual3D.monster.scale, CONFIG.visual3D.monster.scale)
             end
             node.position = Vector3(pos.x, CONFIG.visual3D.floorY + movePulse, pos.z)
-            node.rotation = Quaternion(0, Vector3.UP)
-            UpdateHealthDisplay3D(entry.healthDisplay, monster.hp, monster.maxHp)
+            local heroPos = BoardToWorld(hero_.row, hero_.col)
+            FaceNodeToCell3D(node, node.position, heroPos, CONFIG.visual3D.monster.yaw or 0)
         end
     end
 end
@@ -462,9 +563,31 @@ end
 function UpdateHeroVisual3D()
     if heroNode3D_ == nil then return end
     local pos = BoardToWorld(hero_.row, hero_.col)
+    if pendingHeroDrop_ ~= nil then
+        local t = 1 - Clamp((pendingHeroDrop_.life or 0) / math.max(0.001, pendingHeroDrop_.maxLife or DROP_DURATION), 0, 1)
+        local eased = EaseOutBack(t)
+        local from = BoardToWorld(pendingHeroDrop_.fromRow, pendingHeroDrop_.fromCol)
+        local to = BoardToWorld(pendingHeroDrop_.toRow, pendingHeroDrop_.toCol)
+        pos = Vector3(Lerp(from.x, to.x, eased), CONFIG.visual3D.floorY, Lerp(from.z, to.z, eased))
+    end
     heroNode3D_.position = Vector3(pos.x, CONFIG.visual3D.floorY, pos.z)
     heroNode3D_.rotation = Quaternion(0, Vector3.UP)
-    UpdateHealthDisplay3D(heroHealthDisplay3D_, hero_.hp, hero_.maxHp)
+    if heroArrowNode3D_ ~= nil then
+        heroArrowNode3D_.position = Vector3(pos.x, CONFIG.visual3D.floorY + 2.45 + math.sin(time_ * 5.5) * 0.1, pos.z)
+        heroArrowNode3D_.rotation = Quaternion(180, Vector3.RIGHT)
+    end
+    if hero_.hp <= 0 then
+        PlayHeroAnimation3D("die", false)
+    elseif hero_.attackFlash ~= nil and hero_.attackFlash > 0 then
+        if hero_.attackAnim3D == nil then
+            hero_.attackAnim3D = PickCycledAnimation3D(hero_, { "attackMeleeRight", "attackMeleeLeft", "attackKickRight", "attackKickLeft" })
+        end
+        PlayHeroAnimation3D(hero_.attackAnim3D, false)
+        hero_.attackFlash = math.max(0, hero_.attackFlash - (lastSceneTimeStep3D_ or 0))
+    else
+        hero_.attackAnim3D = nil
+        PlayHeroAnimation3D("idle", true)
+    end
 end
 
 function BuildItemSignature3D()
@@ -478,11 +601,49 @@ function BuildItemSignature3D()
     return table.concat(parts, "|")
 end
 
+function ClearBombWarningNodes3D()
+    for _, node in ipairs(bombWarningNodes3D_) do
+        if node ~= nil then node:Remove() end
+    end
+    bombWarningNodes3D_ = {}
+end
+
+function CreateBombWarningNode3D(trap)
+    local minRow = math.max(1, trap.row - CONFIG.bombRadius)
+    local maxRow = math.min(BOARD_SIZE, trap.row + CONFIG.bombRadius)
+    local minCol = math.max(1, trap.col - CONFIG.bombRadius)
+    local maxCol = math.min(BOARD_SIZE, trap.col + CONFIG.bombRadius)
+    local centerRow = (minRow + maxRow) * 0.5
+    local centerCol = (minCol + maxCol) * 0.5
+    local pos = BoardToWorld(centerRow, centerCol)
+    local cellSize = CONFIG.visual3D.cellSize
+    local width = (maxCol - minCol + 1) * cellSize * 0.96
+    local depth = (maxRow - minRow + 1) * cellSize * 0.96
+    local node = boardRoot3D_:CreateChild("BombWarningArea3D")
+    node.position = Vector3(pos.x, CONFIG.visual3D.floorY + 0.018, pos.z)
+    node.scale = Vector3(width, 0.018, depth)
+    local model = node:CreateComponent("StaticModel")
+    model:SetModel(cache:GetResource("Model", "Models/Box.mdl"))
+    model:SetMaterial(CreatePBRAlphaMaterial3D("bomb_warning_area", Color(1.0, 0.08, 0.04, 0.42), 0.0, 0.4, 1.4))
+    model.castShadows = false
+    table.insert(bombWarningNodes3D_, node)
+end
+
+function RebuildBombWarningNodes3D()
+    ClearBombWarningNodes3D()
+    for _, trap in ipairs(traps_) do
+        if trap.kind == "bomb" then
+            CreateBombWarningNode3D(trap)
+        end
+    end
+end
+
 function RebuildItemNodes3D()
     for _, node in ipairs(itemNodes3D_) do
         if node ~= nil then node:Remove() end
     end
     itemNodes3D_ = {}
+    RebuildBombWarningNodes3D()
     for _, trap in ipairs(traps_) do
         table.insert(itemNodes3D_, CreateItemNode3D(trap.kind, trap.row, trap.col, trap.turns or 0))
     end
@@ -521,30 +682,41 @@ function CreateItemNode3D(kind, row, col, turns)
     model:SetModel(cache:GetResource("Model", modelPath))
     model:SetMaterial(CreatePBRMaterial3D("item_" .. kind, color, kind == "turret" and 0.65 or 0.15, 0.24, 0.8))
     model.castShadows = true
-
-    local badge = node:CreateChild("TurnsBadge")
-    badge.position = Vector3(0, 0.88, 0)
-    badge.scale = Vector3(0.24, 0.24, 0.24)
-    badge.rotation = Quaternion(90, Vector3.RIGHT)
-
-    local badgeBg = badge:CreateChild("TurnsBadgeBackground")
-    badgeBg.position = Vector3(0, -0.012, 0)
-    badgeBg.scale = Vector3(1.45, 0.12, 1.45)
-    local badgeModel = badgeBg:CreateComponent("StaticModel")
-    badgeModel:SetModel(cache:GetResource("Model", "Models/Cylinder.mdl"))
-    badgeModel:SetMaterial(CreatePBRMaterial3D("turn_badge_bg", Color(0.10, 0.06, 0.03, 1.0), 0.0, 0.2, 0.55))
-    badgeModel.castShadows = false
-
-    local textNode = badge:CreateChild("TurnsBadgeText")
-    textNode.position = Vector3(0, 0.02, 0)
-    textNode.scale = Vector3(0.018, 0.018, 0.018)
-    local text = textNode:CreateComponent("Text3D")
-    text:SetFont("Fonts/MiSans-Regular.ttf", 34)
-    text:SetAlignment(HA_CENTER, VA_CENTER)
-    text:SetTextAlignment(HA_CENTER)
-    text:SetColor(Color(1.0, 0.92, 0.38, 1.0))
-    text:SetText(tostring(math.max(0, turns or 0)))
     return node
+end
+
+function GetTrapItemNode3D(trap)
+    for index, candidate in ipairs(traps_) do
+        if candidate == trap then
+            return itemNodes3D_[index]
+        end
+    end
+    return nil
+end
+
+function ApplyItemSwapAnimation3D()
+    local anim = currentAnim_
+    if anim == nil or anim.kind ~= "itemSwapTrigger" then return end
+    local trap = nil
+    local fromCell = nil
+    local toCell = nil
+    if anim.objA.kind == "trap" then
+        trap = anim.objA.ref
+        fromCell = anim.a
+        toCell = anim.b
+    elseif anim.objB.kind == "trap" then
+        trap = anim.objB.ref
+        fromCell = anim.b
+        toCell = anim.a
+    end
+    if trap == nil then return end
+    local node = GetTrapItemNode3D(trap)
+    if node == nil then return end
+    local t = Clamp(anim.elapsed / anim.duration, 0, 1)
+    local eased = EaseInOut(t)
+    local from = BoardToWorld(fromCell.row, fromCell.col)
+    local to = BoardToWorld(toCell.row, toCell.col)
+    node.position = Vector3(Lerp(from.x, to.x, eased), CONFIG.visual3D.floorY + 0.25 + math.sin(t * math.pi) * 0.12, Lerp(from.z, to.z, eased))
 end
 
 function UpdateItemNodes3D(timeStep)
@@ -570,9 +742,11 @@ end
 
 function UpdateScene3D(timeStep)
     if scene3D_ == nil then return end
+    lastSceneTimeStep3D_ = timeStep
     UpdateRuneGrid3D()
     UpdateHeroVisual3D()
     UpdateMonsterVisuals3D(timeStep)
+    UpdateMonsterDeathBursts3D(timeStep)
     UpdateItemNodes3D(timeStep)
 
     for _, node in ipairs(itemNodes3D_) do
@@ -580,6 +754,7 @@ function UpdateScene3D(timeStep)
             node.position = Vector3(node.position.x, CONFIG.visual3D.floorY + 0.25 + math.sin(time_ * 4) * 0.04, node.position.z)
         end
     end
+    ApplyItemSwapAnimation3D()
 end
 
 function ScreenToBoardCell3D(inputX, inputY)

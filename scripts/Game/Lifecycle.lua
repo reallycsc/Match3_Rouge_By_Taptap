@@ -13,16 +13,22 @@ function Start()
         return
     end
 
-    fontId_ = nvgCreateFont(vg_, "misans", "Fonts/MiSans-Regular.ttf")
+    fontId_ = nvgCreateFont(vg_, "pixelforge", "Fonts/FusionPixel-12px-Prop-zh_hans.ttf")
     if fontId_ == -1 then
-        print("ERROR: Failed to load font Fonts/MiSans-Regular.ttf")
+        fontId_ = nvgCreateFont(vg_, "misans", "Fonts/MiSans-Regular.ttf")
+    end
+    if fontId_ == -1 then
+        print("ERROR: Failed to load UI font")
     end
 
-    trapImage_ = nvgCreateImage(vg_, CONFIG.trapImagePath, 0)
-    if trapImage_ == -1 then
-        print("ERROR: Failed to load trap image " .. CONFIG.trapImagePath)
-    else
-        print("Trap image loaded: " .. CONFIG.trapImagePath)
+    trapImage_ = -1
+    if CONFIG.trapImagePath ~= nil and CONFIG.trapImagePath ~= "" then
+        trapImage_ = nvgCreateImage(vg_, CONFIG.trapImagePath, 0)
+        if trapImage_ == -1 then
+            print("Trap image not loaded, fallback vector item rendering will be used: " .. CONFIG.trapImagePath)
+        else
+            print("Trap image loaded: " .. CONFIG.trapImagePath)
+        end
     end
 
     ResetGame()
@@ -34,6 +40,8 @@ function Start()
     SubscribeToEvent("MouseButtonUp", "HandleMouseButtonUp")
     SubscribeToEvent("MouseMove", "HandleMouseMove")
     SubscribeToEvent("TouchBegin", "HandleTouchBegin")
+    SubscribeToEvent("TouchMove", "HandleTouchMove")
+    SubscribeToEvent("TouchEnd", "HandleTouchEnd")
     SubscribeToEvent("KeyDown", "HandleKeyDown")
     SubscribeToEvent("ScreenMode", "HandleScreenMode")
     print("Dark match-3 prototype started")

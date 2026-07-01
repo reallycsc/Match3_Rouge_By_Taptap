@@ -34,6 +34,18 @@ function HandleTouchBegin(eventType, eventData)
 end
 
 ---@param eventType string
+---@param eventData TouchMoveEventData
+function HandleTouchMove(eventType, eventData)
+    Game.HandleTouchMove(eventType, eventData)
+end
+
+---@param eventType string
+---@param eventData TouchEndEventData
+function HandleTouchEnd(eventType, eventData)
+    Game.HandleTouchEnd(eventType, eventData)
+end
+
+---@param eventType string
 ---@param eventData KeyDownEventData
 function HandleKeyDown(eventType, eventData)
     Game.HandleKeyDown(eventType, eventData)

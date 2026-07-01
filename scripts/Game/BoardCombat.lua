@@ -26,13 +26,17 @@ function TrapAt(row, col)
     return nil
 end
 
-function OccupiedByMissileSilo(row, col)
+function MissileSiloAt(row, col)
     for _, silo in ipairs(missileSilos_) do
         if silo.row == row and silo.col == col then
-            return true
+            return silo
         end
     end
-    return false
+    return nil
+end
+
+function OccupiedByMissileSilo(row, col)
+    return MissileSiloAt(row, col) ~= nil
 end
 
 function OccupiedByObstacle(row, col)
@@ -117,6 +121,7 @@ function SpawnMonsters()
                 col = cell.col,
                 hp = hp,
                 maxHp = hp,
+                hpBuffer = hp,
                 attack = CONFIG.monsterAttackBase + math.floor(wave_ / CONFIG.monsterAttackPerWave),
                 pulse = math.random() * 10,
             })
@@ -131,12 +136,14 @@ function ResetGame()
     for _ = 1, restartCount_ % 11 + 3 do
         math.random()
     end
-    hero_ = { row = 5, col = 5, hp = CONFIG.heroMaxHp, maxHp = CONFIG.heroMaxHp }
+    hero_ = { row = 5, col = 5, hp = CONFIG.heroMaxHp, maxHp = CONFIG.heroMaxHp, hpBuffer = CONFIG.heroMaxHp }
     selected_ = nil
+    lastTapCell_ = nil
     monsters_ = {}
     traps_ = {}
     floatTexts_ = {}
     particles_ = {}
+    hudDamageParticles_ = {}
     matchEffects_ = {}
     laserBeams_ = {}
     bombExplosions_ = {}
@@ -153,16 +160,28 @@ function ResetGame()
     isAnimating_ = false
     currentAnim_ = nil
     pendingMove_ = false
+    pendingMonsterTurn_ = false
+    waitingMonsterTurnBanner_ = false
+    pendingItemBoardRefill_ = false
+    lastSwapDropDir_ = { row = 1, col = 0 }
+    pendingHeroDrop_ = nil
+    dropHeroMoved_ = false
+    isItemTurnResolving_ = false
     dragStart_ = nil
     dragTriggered_ = false
     turnId_ = 0
+    pendingRogueReward_ = false
+    turnBanner_ = nil
+    turnBannerQueue_ = {}
+    ResetRoguelikeState()
     gameState_ = "playing"
     FillNewBoard()
     SpawnMonsters()
     ClearActorCells()
     EnsureBoardHasMove()
     SyncScene3D()
-    SetMessage("符石生存开始：直线5消会部署3回合导弹井", 3.0)
+    SetMessage("符石生存开始：击败每波怪物后选择遗物、BUFF或道具", 3.0)
+    ShowTurnBanner("玩家回合", "player")
     print("Game reset: board generated, monsters=" .. tostring(#monsters_))
 end
 
@@ -398,7 +417,7 @@ function ShuffleBoardGems()
     return false
 end
 
-function EnsureBoardStable(combo)
+function EnsureBoardStable(combo, phase)
     if gameState_ ~= "playing" or isAnimating_ then return false end
 
     local matches, specials = FindMatches()
@@ -406,7 +425,7 @@ function EnsureBoardStable(combo)
         hintCells_ = {}
         hintScore_ = 0
         SetMessage("符石爆裂，黑暗生物受到波及", 1.5)
-        StartAutoClearAnimation(matches, combo or 1, specials, nil)
+        StartAutoClearAnimation(matches, combo or 1, specials, nil, phase)
         return true
     end
 
@@ -429,15 +448,21 @@ function AddCellUnique(cells, exists, row, col, gemType)
     end
 end
 
+function AddSpecialIfUnlocked(specials, special)
+    if IsSpecialUnlocked(special.kind) then
+        table.insert(specials, special)
+    end
+end
+
 function AddSpecialFromRun(specials, runCells, direction)
     if #runCells < 4 then return end
     if #runCells == 4 then
-        table.insert(specials, { kind = direction == "horizontal" and "laserH" or "laserV", cells = runCells })
+        AddSpecialIfUnlocked(specials, { kind = direction == "horizontal" and "laserH" or "laserV", cells = runCells })
     elseif #runCells == 5 then
-        table.insert(specials, { kind = "missileSilo", cells = runCells })
+        AddSpecialIfUnlocked(specials, { kind = "missileSilo", cells = runCells })
     elseif #runCells > 5 then
-        table.insert(specials, { kind = direction == "horizontal" and "laserH" or "laserV", cells = runCells })
-        table.insert(specials, { kind = "missileSilo", cells = runCells })
+        AddSpecialIfUnlocked(specials, { kind = direction == "horizontal" and "laserH" or "laserV", cells = runCells })
+        AddSpecialIfUnlocked(specials, { kind = "missileSilo", cells = runCells })
     end
 end
 
@@ -480,7 +505,7 @@ function AddShapeSpecials(specials, marked)
                             marked[cellKey] = cell
                             cellsInBomb[cellKey] = true
                         end
-                        table.insert(specials, { kind = "bomb", cells = cells, anchor = { row = row, col = col, type = gemType } })
+                        AddSpecialIfUnlocked(specials, { kind = "bomb", cells = cells, anchor = { row = row, col = col, type = gemType } })
                     end
                 end
             end
@@ -511,7 +536,7 @@ function AddShapeSpecials(specials, marked)
                     for _, cell in ipairs(cells) do
                         marked[CellKey(cell.row, cell.col)] = cell
                     end
-                    table.insert(specials, { kind = "turret", cells = cells })
+                    AddSpecialIfUnlocked(specials, { kind = "turret", cells = cells })
                 end
             end
         end
@@ -625,14 +650,12 @@ function AddTrap(kind, row, col, cells)
     }
     if kind == "turret" then
         trap.turns = CONFIG.turretTurns
-    elseif kind == "laserH" or kind == "laserV" then
-        trap.turns = CONFIG.laserTurns
-    elseif kind == "bomb" then
-        trap.turns = CONFIG.bombTurns
     end
     board_[row][col] = 0
     table.insert(traps_, trap)
-    AddFloatText(row, col, kind == "laserH" and "横向激光" or kind == "laserV" and "纵向激光" or kind == "turret" and "炮台" or kind == "missileSilo" and "导弹井" or "炸弹", { 120, 230, 255, 255 })
+    local label = kind == "laserH" and "横向激光" or kind == "laserV" and "纵向激光" or kind == "turret" and "炮台" or kind == "missileSilo" and "导弹井" or "炸弹"
+    AddFloatText(row, col, label, { 120, 230, 255, 255 })
+    AddOperationLog("生成道具：" .. label .. " (" .. tostring(row) .. "," .. tostring(col) .. ")")
 end
 
 function PickSpecialAnchor(special, preferredCells)
@@ -656,6 +679,7 @@ function AddMissileSilo(row, col)
         turnsLeft = CONFIG.missileSiloTurns,
         age = 0,
     })
+    AddOperationLog("生成道具：导弹井 (" .. tostring(row) .. "," .. tostring(col) .. ")")
     AddFloatText(row, col, "导弹井", { 255, 220, 120, 255 })
 end
 
@@ -663,6 +687,228 @@ function SpawnMissileSilos(cells)
     for _, cell in ipairs(cells or {}) do
         AddMissileSilo(cell.row, cell.col)
     end
+end
+
+function BoardObjectAt(row, col)
+    local trap = TrapAt(row, col)
+    if trap ~= nil then
+        return { kind = "trap", ref = trap }
+    end
+    local silo = MissileSiloAt(row, col)
+    if silo ~= nil then
+        return { kind = "silo", ref = silo }
+    end
+    if board_[row] ~= nil and board_[row][col] ~= 0 then
+        return { kind = "gem", gemType = board_[row][col] }
+    end
+    return nil
+end
+
+function PlaceBoardObject(row, col, object)
+    board_[row][col] = 0
+    if object == nil then return end
+    if object.kind == "gem" then
+        board_[row][col] = object.gemType
+    elseif object.kind == "trap" then
+        object.ref.row = row
+        object.ref.col = col
+    elseif object.kind == "silo" then
+        object.ref.row = row
+        object.ref.col = col
+    end
+end
+
+function IsTriggerTrapKind(kind)
+    return kind == "laserH" or kind == "laserV" or kind == "bomb"
+end
+
+function IsSwappableBoardObject(object)
+    if object == nil then return false end
+    if object.kind == "gem" then return true end
+    if object.kind == "trap" then return IsTriggerTrapKind(object.ref.kind) end
+    return false
+end
+
+function CanSwapBoardObjects(a, b)
+    if not IsAdjacent(a, b) then return false end
+    if OccupiedByActor(a.row, a.col) or OccupiedByActor(b.row, b.col) then return false end
+    local objA = BoardObjectAt(a.row, a.col)
+    local objB = BoardObjectAt(b.row, b.col)
+    return IsSwappableBoardObject(objA) and IsSwappableBoardObject(objB)
+end
+
+function SwapBoardObjects(a, b)
+    if not CanSwapBoardObjects(a, b) then return false end
+    local objA = BoardObjectAt(a.row, a.col)
+    local objB = BoardObjectAt(b.row, b.col)
+    PlaceBoardObject(a.row, a.col, nil)
+    PlaceBoardObject(b.row, b.col, nil)
+    PlaceBoardObject(a.row, a.col, objB)
+    PlaceBoardObject(b.row, b.col, objA)
+    ClearActorCells()
+    lastSwapDropDir_ = { row = b.row - a.row, col = b.col - a.col }
+    itemSignature3D_ = nil
+    AddOperationLog("交换：" .. FormatBoardCell(a.row, a.col) .. " 与 " .. FormatBoardCell(b.row, b.col))
+    return true
+end
+
+function GetTriggerableTrapAt(row, col)
+    local trap = TrapAt(row, col)
+    if trap ~= nil and IsTriggerTrapKind(trap.kind) then
+        return trap
+    end
+    return nil
+end
+
+function ClearGemWithoutAreaDamage(row, col)
+    if IsValidCell(row, col) and board_[row][col] ~= 0 then
+        local gemType = board_[row][col]
+        board_[row][col] = 0
+        table.insert(matchEffects_, { row = row, col = col, life = 0.3, maxLife = 0.3, type = gemType })
+        AddParticles(row, col, GEM_COLORS[gemType], 4)
+        score_ = score_ + CONFIG.scorePerGem
+    end
+end
+
+function RemoveTrapInstance(trap)
+    for i = #traps_, 1, -1 do
+        if traps_[i] == trap then
+            table.remove(traps_, i)
+            pendingItemBoardRefill_ = true
+            return true
+        end
+    end
+    return false
+end
+
+function TriggerLaserTrapManually(trap)
+    AddLaserBeam(trap, nil)
+    local damaged = {}
+    if trap.kind == "laserH" then
+        for col = 1, BOARD_SIZE do
+            ClearGemWithoutAreaDamage(trap.row, col)
+        end
+        for _, monster in ipairs(monsters_) do
+            if monster.hp > 0 and monster.row == trap.row then
+                damaged[monster] = true
+            end
+        end
+    else
+        for row = 1, BOARD_SIZE do
+            ClearGemWithoutAreaDamage(row, trap.col)
+        end
+        for _, monster in ipairs(monsters_) do
+            if monster.hp > 0 and monster.col == trap.col then
+                damaged[monster] = true
+            end
+        end
+    end
+    for monster, _ in pairs(damaged) do
+        DamageMonster(monster, GetRogueItemDamage(CONFIG.laserDamage), "激光-", { name = "激光", row = trap.row, col = trap.col, action = "手动触发" })
+    end
+    AddOperationLog("手动触发：激光" .. FormatBoardCell(trap.row, trap.col) .. " 清除路径符石")
+end
+
+function TriggerBombTrapManually(trap)
+    AddBombExplosion(trap)
+    local minRow = math.max(1, trap.row - CONFIG.bombRadius)
+    local maxRow = math.min(BOARD_SIZE, trap.row + CONFIG.bombRadius)
+    local minCol = math.max(1, trap.col - CONFIG.bombRadius)
+    local maxCol = math.min(BOARD_SIZE, trap.col + CONFIG.bombRadius)
+    for row = minRow, maxRow do
+        for col = minCol, maxCol do
+            ClearGemWithoutAreaDamage(row, col)
+        end
+    end
+    for _, monster in ipairs(monsters_) do
+        if monster.hp > 0 and IsNearCell(trap.row, trap.col, monster.row, monster.col, CONFIG.bombRadius) then
+            DamageMonster(monster, GetRogueItemDamage(CONFIG.bombDamage), "爆炸-", { name = "炸弹", row = trap.row, col = trap.col, action = "手动爆炸" })
+        end
+    end
+    AddOperationLog("手动触发：炸弹" .. FormatBoardCell(trap.row, trap.col) .. " 爆破 3x3 范围")
+end
+
+function TriggerTrapManually(trap)
+    if trap == nil or gameState_ ~= "playing" or isAnimating_ then return false end
+    if trap.kind == "laserH" or trap.kind == "laserV" then
+        TriggerLaserTrapManually(trap)
+        SetMessage("激光向两侧发射，清除路径符石并伤害路径怪物", 1.8)
+    elseif trap.kind == "bomb" then
+        TriggerBombTrapManually(trap)
+        SetMessage("炸弹爆发 3x3 冲击波，清除范围符石并伤害范围怪物", 1.8)
+    else
+        return false
+    end
+
+    RemoveTrapInstance(trap)
+    RemoveDeadMonsters()
+    local drops = DropAndRefillBoard()
+    local heroMoved = dropHeroMoved_
+    selected_ = nil
+    dragStart_ = nil
+    dragTriggered_ = false
+    moves_ = moves_ + 1
+    pendingMove_ = false
+    hero_.attackFlash = 0.42
+    RunItemTurn()
+    if #drops > 0 then
+        pendingMonsterTurn_ = true
+        isItemTurnResolving_ = false
+        StartEnemyDropAnimation(drops, 0, "item", heroMoved)
+    else
+        StartMonsterTurnAfterItemAnimations()
+    end
+    return true
+end
+
+function TryTriggerTrapCell(cell)
+    if cell == nil then return false end
+    return TriggerTrapManually(GetTriggerableTrapAt(cell.row, cell.col))
+end
+
+function TryTriggerTrapBySwap(a, b)
+    if not IsAdjacent(a, b) then return false end
+    local trapA = GetTriggerableTrapAt(a.row, a.col)
+    if trapA ~= nil and board_[b.row] and board_[b.row][b.col] ~= 0 then
+        return TriggerTrapManually(trapA)
+    end
+    local trapB = GetTriggerableTrapAt(b.row, b.col)
+    if trapB ~= nil and board_[a.row] and board_[a.row][a.col] ~= 0 then
+        return TriggerTrapManually(trapB)
+    end
+    return false
+end
+
+function FormatBoardCell(row, col)
+    return "(" .. tostring(row) .. "," .. tostring(col) .. ")"
+end
+
+function FormatDamageSource(source)
+    if type(source) == "table" then
+        local name = source.name or "道具"
+        local pos = ""
+        if source.row ~= nil and source.col ~= nil then
+            pos = FormatBoardCell(source.row, source.col)
+        end
+        local action = source.action or "触发"
+        return name .. pos .. action
+    end
+    return tostring(source or "")
+end
+
+function FormatMonsterHealth(monster)
+    return tostring(math.max(0, monster.hp)) .. "/" .. tostring(monster.maxHp or monster.hp or 0)
+end
+
+function FormatAttackerList(attackers)
+    local parts = {}
+    for _, monster in ipairs(attackers or {}) do
+        table.insert(parts, FormatBoardCell(monster.row, monster.col))
+    end
+    if #parts == 0 then
+        return "怪物"
+    end
+    return tostring(#parts) .. "只怪物" .. table.concat(parts, "、")
 end
 
 function FindMonsterAt(row, col)
@@ -687,7 +933,7 @@ function FindSiloLockedTarget(silo)
     return target
 end
 
-function FireMissileSilos()
+function FireMissileSilos(startDrop)
     if #missileSilos_ == 0 then return false end
 
     local firedAny = false
@@ -698,7 +944,7 @@ function FireMissileSilos()
                 AddItemTriggerEffect("missile", silo.row, silo.col, target.row, target.col)
                 for missileIndex = 1, CONFIG.missilesPerSiloTurn do
                     AddMissile(silo.row, silo.col, target, missileIndex)
-                    DamageMonster(target, CONFIG.missileDamage, "导弹-")
+                    DamageMonster(target, GetRogueItemDamage(CONFIG.missileDamage), "导弹-", { name = "导弹井", row = silo.row, col = silo.col, action = "发射" })
                     firedAny = true
                 end
             end
@@ -709,31 +955,75 @@ function FireMissileSilos()
     for i = #missileSilos_, 1, -1 do
         if (missileSilos_[i].turnsLeft or 0) <= 0 then
             table.remove(missileSilos_, i)
+            pendingItemBoardRefill_ = true
         end
     end
 
     if firedAny then
         SetMessage("导弹井发射追踪导弹", 1.8)
-        RemoveDeadMonsters()
+        if isItemTurnResolving_ then
+            pendingItemBoardRefill_ = true
+        else
+            RemoveDeadMonsters()
+        end
     end
-    if firedAny and StartEnemyDropAnimation ~= nil then
+    if firedAny and startDrop ~= false and StartEnemyDropAnimation ~= nil then
         local drops = DropAndRefillBoard()
-        return StartEnemyDropAnimation(drops, 0)
+        local heroMoved = dropHeroMoved_
+        return StartEnemyDropAnimation(drops, 0, "monster", heroMoved)
     end
     return firedAny
 end
 
-function SpawnSpecialTraps(specials, preferredCells)
-    for _, special in ipairs(specials) do
-        if special.kind == "missileSilo" then
-            SpawnMissileSilos(special.cells)
-        else
-            local anchor = PickSpecialAnchor(special, preferredCells)
-            if anchor then
-                AddTrap(special.kind, anchor.row, anchor.col, special.cells)
-            end
+function GetSpecialPriority(kind)
+    if kind == "missileSilo" then return 4 end
+    if kind == "bomb" then return 3 end
+    if kind == "laserH" or kind == "laserV" then return 2 end
+    if kind == "turret" then return 1 end
+    return 0
+end
+
+function PickHighestPrioritySpecial(specials)
+    local best = nil
+    local bestPriority = -1
+    for _, special in ipairs(specials or {}) do
+        local priority = GetSpecialPriority(special.kind)
+        if priority > bestPriority then
+            best = special
+            bestPriority = priority
         end
     end
+    return best
+end
+
+function SpawnSpecialTraps(specials, preferredCells)
+    local special = PickHighestPrioritySpecial(specials)
+    if special == nil then return end
+    if special.kind == "missileSilo" then
+        for _, cell in ipairs(special.cells or {}) do
+            AddMissileSilo(cell.row, cell.col)
+        end
+    else
+        local anchor = PickSpecialAnchor(special, preferredCells)
+        if anchor then
+            AddTrap(special.kind, anchor.row, anchor.col, special.cells)
+        end
+    end
+end
+
+function CompleteWaveIfCleared()
+    if #monsters_ == 0 and gameState_ == "playing" then
+        pendingRogueReward_ = true
+    end
+end
+
+function TryOpenPendingRogueReward()
+    if pendingRogueReward_ and gameState_ == "playing" and not isAnimating_ and not HasPendingItemAnimations() and #monsterMoves_ == 0 then
+        pendingRogueReward_ = false
+        BeginRogueReward()
+        return true
+    end
+    return false
 end
 
 function RemoveDeadMonsters()
@@ -743,6 +1033,9 @@ function RemoveDeadMonsters()
         if monster.hp <= 0 then
             AddFloatText(monster.row, monster.col, "击杀", { 255, 210, 80, 255 })
             AddParticles(monster.row, monster.col, { 255, 64, 36, 255 }, 24)
+            if AddMonsterDeathBurst3D ~= nil then
+                AddMonsterDeathBurst3D(monster.row, monster.col)
+            end
             score_ = score_ + CONFIG.killScore + wave_ * CONFIG.killScorePerWave
             table.remove(monsters_, i)
             removedAny = true
@@ -750,11 +1043,7 @@ function RemoveDeadMonsters()
     end
 
     if #monsters_ == 0 and gameState_ == "playing" then
-        wave_ = wave_ + 1
-        hero_.hp = Clamp(hero_.hp + CONFIG.heroHealPerWave, 0, hero_.maxHp)
-        SpawnMonsters()
-        SetMessage("新的恶魔潮涌入棋盘。主角恢复 " .. tostring(CONFIG.heroHealPerWave) .. " 点生命", 2.5)
-        print("Next wave: " .. tostring(wave_) .. ", monsters=" .. tostring(#monsters_))
+        CompleteWaveIfCleared()
     end
     return removedAny
 end
@@ -779,9 +1068,11 @@ function ApplyMatchDamage(matches, combo, specials, preferredCells)
     for index, shouldDamage in pairs(damagedMonsters) do
         local monster = monsters_[index]
         if shouldDamage and monster and monster.hp > 0 then
-            local finalDamage = matchedCount
+            local finalDamage = matchedCount + GetRogueBuff("matchDamageBonus")
+            monster.hpBuffer = math.max(monster.hpBuffer or monster.hp or 0, monster.hp or 0)
             monster.hp = monster.hp - finalDamage
             anyDamage = true
+            AddOperationLog("消除伤害：玩家消除 " .. tostring(matchedCount) .. " 个符石，波及怪物" .. FormatBoardCell(monster.row, monster.col) .. "，造成 " .. tostring(finalDamage) .. " 点伤害，怪物生命 " .. FormatMonsterHealth(monster))
             AddFloatText(monster.row, monster.col, "-" .. tostring(finalDamage), { 255, 80, 60, 255 })
             AddParticles(monster.row, monster.col, { 255, 80, 42, 255 }, 12)
             print("Monster damaged: index=" .. tostring(index) .. ", damage=" .. tostring(finalDamage) .. ", hp=" .. tostring(monster.hp))
@@ -798,51 +1089,144 @@ function ApplyMatchDamage(matches, combo, specials, preferredCells)
     RemoveDeadMonsters()
 end
 
-function DropAndRefillBoard()
-    local drops = {}
+function GetActiveDropDirection()
+    if not IsDirectionalDropUnlocked() then
+        return { row = 1, col = 0 }
+    end
+    local dir = lastSwapDropDir_ or { row = 1, col = 0 }
+    local row = dir.row or 0
+    local col = dir.col or 0
+    if Abs(row) + Abs(col) ~= 1 then
+        return { row = 1, col = 0 }
+    end
+    return { row = row, col = col }
+end
 
-    for col = 1, BOARD_SIZE do
-        local gems = {}
-        for row = BOARD_SIZE, 1, -1 do
-            if not OccupiedByBoardBlocker(row, col) and board_[row][col] ~= 0 then
-                table.insert(gems, { type = board_[row][col], fromRow = row, fromCol = col })
+function GetSpawnCellForDrop(sourceCell, dropDir, spawnIndex)
+    return {
+        row = sourceCell.row - dropDir.row * spawnIndex,
+        col = sourceCell.col - dropDir.col * spawnIndex,
+    }
+end
+
+function OccupiedByFixedDropBlocker(row, col)
+    return HasMonsterAt(row, col) or OccupiedByObstacle(row, col)
+end
+
+function ApplyHeroDrop(fromRow, fromCol, toRow, toCol)
+    if fromRow == toRow and fromCol == toCol then return end
+    dropHeroMoved_ = true
+    pendingHeroDrop_ = {
+        fromRow = fromRow,
+        fromCol = fromCol,
+        toRow = toRow,
+        toCol = toCol,
+        life = DROP_DURATION,
+        maxLife = DROP_DURATION,
+    }
+    hero_.row = toRow
+    hero_.col = toCol
+end
+
+function ProcessDropSegment(segment, drops, dropDir)
+    if #segment == 0 then return end
+
+    local items = {}
+    for _, cell in ipairs(segment) do
+        if IsDirectionalDropUnlocked() and hero_.row == cell.row and hero_.col == cell.col then
+            table.insert(items, { kind = "hero", fromRow = cell.row, fromCol = cell.col })
+        else
+            local gemType = board_[cell.row][cell.col]
+            if gemType ~= 0 then
+                table.insert(items, { kind = "gem", type = gemType, fromRow = cell.row, fromCol = cell.col })
             end
-            board_[row][col] = 0
         end
+        board_[cell.row][cell.col] = 0
+    end
 
-        local gemIndex = 1
-        local spawnIndex = 0
-        for row = BOARD_SIZE, 1, -1 do
-            if not OccupiedByBoardBlocker(row, col) then
-                local gem = gems[gemIndex]
-                if gem then
-                    board_[row][col] = gem.type
-                    if gem.fromRow ~= row then
-                        table.insert(drops, {
-                            type = gem.type,
-                            fromRow = gem.fromRow,
-                            fromCol = gem.fromCol,
-                            toRow = row,
-                            toCol = col,
-                        })
-                    end
-                    gemIndex = gemIndex + 1
-                else
-                    local gemType = math.random(1, GEM_TYPES)
-                    board_[row][col] = gemType
-                    spawnIndex = spawnIndex + 1
-                    table.insert(drops, {
-                        type = gemType,
-                        fromRow = -spawnIndex,
-                        fromCol = col,
-                        toRow = row,
-                        toCol = col,
-                    })
-                end
+    local sourceCell = segment[#segment]
+    local spawnIndex = 0
+    for index, cell in ipairs(segment) do
+        local item = items[index]
+        if item == nil then
+            local gemType = math.random(1, GEM_TYPES)
+            board_[cell.row][cell.col] = gemType
+            spawnIndex = spawnIndex + 1
+            local spawnCell = GetSpawnCellForDrop(sourceCell, dropDir, spawnIndex)
+            table.insert(drops, {
+                type = gemType,
+                fromRow = spawnCell.row,
+                fromCol = spawnCell.col,
+                toRow = cell.row,
+                toCol = cell.col,
+            })
+        elseif item.kind == "hero" then
+            ApplyHeroDrop(item.fromRow, item.fromCol, cell.row, cell.col)
+        else
+            board_[cell.row][cell.col] = item.type
+            if item.fromRow ~= cell.row or item.fromCol ~= cell.col then
+                table.insert(drops, {
+                    type = item.type,
+                    fromRow = item.fromRow,
+                    fromCol = item.fromCol,
+                    toRow = cell.row,
+                    toCol = cell.col,
+                })
             end
         end
     end
+end
 
+function ProcessDropLine(cells, drops, dropDir)
+    local segment = {}
+    for _, cell in ipairs(cells) do
+        if OccupiedByFixedDropBlocker(cell.row, cell.col) then
+            ProcessDropSegment(segment, drops, dropDir)
+            segment = {}
+            board_[cell.row][cell.col] = 0
+        else
+            table.insert(segment, cell)
+        end
+    end
+    ProcessDropSegment(segment, drops, dropDir)
+end
+
+function DropAndRefillBoard()
+    dropHeroMoved_ = false
+    local drops = {}
+    local dropDir = GetActiveDropDirection()
+
+    if dropDir.row ~= 0 then
+        for col = 1, BOARD_SIZE do
+            local cells = {}
+            if dropDir.row > 0 then
+                for row = BOARD_SIZE, 1, -1 do
+                    table.insert(cells, { row = row, col = col })
+                end
+            else
+                for row = 1, BOARD_SIZE do
+                    table.insert(cells, { row = row, col = col })
+                end
+            end
+            ProcessDropLine(cells, drops, dropDir)
+        end
+    else
+        for row = 1, BOARD_SIZE do
+            local cells = {}
+            if dropDir.col > 0 then
+                for col = BOARD_SIZE, 1, -1 do
+                    table.insert(cells, { row = row, col = col })
+                end
+            else
+                for col = 1, BOARD_SIZE do
+                    table.insert(cells, { row = row, col = col })
+                end
+            end
+            ProcessDropLine(cells, drops, dropDir)
+        end
+    end
+
+    ClearActorCells()
     return drops
 end
 
@@ -865,8 +1249,12 @@ function ResolveMatches()
     return totalMatched > 0
 end
 
-function DamageMonster(monster, amount, label)
+function DamageMonster(monster, amount, label, source)
+    monster.hpBuffer = math.max(monster.hpBuffer or monster.hp or 0, monster.hp or 0)
     monster.hp = monster.hp - amount
+    if source ~= nil and source ~= "" then
+        AddOperationLog("道具伤害：" .. FormatDamageSource(source) .. "，命中怪物" .. FormatBoardCell(monster.row, monster.col) .. "，造成 " .. tostring(amount) .. " 点伤害，怪物生命 " .. FormatMonsterHealth(monster))
+    end
     AddFloatText(monster.row, monster.col, (label or "-") .. tostring(amount), { 255, 92, 60, 255 })
     AddParticles(monster.row, monster.col, { 255, 84, 42, 255 }, 14)
 end
@@ -974,13 +1362,18 @@ function AddMissile(row, col, monster, missileIndex)
     })
 end
 
-function AddCannonShell(trap, monster)
+function AddCannonShell(trap, monster, damage)
+    local fromPoint = ItemHudPoint3D ~= nil and ItemHudPoint3D(trap.row, trap.col, 0.62) or nil
+    local targetPoint = BoardHudPoint3D ~= nil and BoardHudPoint3D(monster.row, monster.col, 0.36) or nil
     local sx, sy = CellCenter(trap.row, trap.col)
-    local centerPoint = MonsterCenterHudPoint3D ~= nil and MonsterCenterHudPoint3D(monster) or nil
     local tx, ty = CellCenter(monster.row, monster.col)
-    if centerPoint ~= nil then
-        tx = centerPoint.x
-        ty = centerPoint.y
+    if fromPoint ~= nil then
+        sx = fromPoint.x
+        sy = fromPoint.y
+    end
+    if targetPoint ~= nil then
+        tx = targetPoint.x
+        ty = targetPoint.y
     end
     table.insert(cannonShells_, {
         x = sx,
@@ -989,7 +1382,12 @@ function AddCannonShell(trap, monster)
         fromY = sy,
         toX = tx,
         toY = ty,
+        sourceRow = trap.row,
+        sourceCol = trap.col,
         targetMonster = monster,
+        damage = damage or CONFIG.turretDamage,
+        source = { name = "炮台", row = trap.row, col = trap.col, action = "开火" },
+        resolved = false,
         life = 0.5,
         maxLife = 0.5,
     })
@@ -1007,30 +1405,32 @@ function AddBombExplosion(trap)
 end
 
 function AddLaserBeam(trap, monster)
+    local targetRow = monster and monster.row or trap.row
+    local targetCol = monster and monster.col or trap.col
     table.insert(laserBeams_, {
         kind = trap.kind,
         row = trap.row,
         col = trap.col,
-        targetRow = monster.row,
-        targetCol = monster.col,
+        targetRow = targetRow,
+        targetCol = targetCol,
         life = 0.36,
         maxLife = 0.36,
     })
-    AddItemTriggerEffect(trap.kind, trap.row, trap.col, monster.row, monster.col)
+    AddItemTriggerEffect(trap.kind, trap.row, trap.col, targetRow, targetCol)
 end
 
 function TriggerTrap(trap, monster)
     if trap.kind == "laserH" then
         AddLaserBeam(trap, monster)
-        DamageMonster(monster, CONFIG.laserDamage, "激光-")
+        DamageMonster(monster, GetRogueItemDamage(CONFIG.laserDamage), "激光-", { name = "横向激光", row = trap.row, col = trap.col, action = "触发" })
     elseif trap.kind == "laserV" then
         AddLaserBeam(trap, monster)
-        DamageMonster(monster, CONFIG.laserDamage, "激光-")
+        DamageMonster(monster, GetRogueItemDamage(CONFIG.laserDamage), "激光-", { name = "纵向激光", row = trap.row, col = trap.col, action = "触发" })
     elseif trap.kind == "bomb" then
         AddBombExplosion(trap)
         for _, target in ipairs(monsters_) do
             if target.hp > 0 and IsNearCell(trap.row, trap.col, target.row, target.col, CONFIG.bombRadius) then
-                DamageMonster(target, CONFIG.bombDamage, "爆炸-")
+                DamageMonster(target, GetRogueItemDamage(CONFIG.bombDamage), "爆炸-", { name = "炸弹", row = trap.row, col = trap.col, action = "爆炸" })
             end
         end
     end
@@ -1039,13 +1439,14 @@ end
 StartAutoClearAnimation = nil
 StartEnemyDropAnimation = nil
 
-function StartTrapRefillDrop(combo)
+function StartTrapRefillDrop(combo, phase)
     if StartEnemyDropAnimation == nil then return false end
     local drops = DropAndRefillBoard()
-    return StartEnemyDropAnimation(drops, combo or 0)
+    local heroMoved = dropHeroMoved_
+    return StartEnemyDropAnimation(drops, combo or 0, phase or "monster", heroMoved)
 end
 
-function CheckTriggeredTraps()
+function CheckTriggeredTraps(startDrop)
     local triggeredAny = false
     local removedAnyTrap = false
     for i = #traps_, 1, -1 do
@@ -1063,30 +1464,50 @@ function CheckTriggeredTraps()
                     end
                 end
             end
-            if hitMonster then
+            if trap.kind ~= "laserH" and trap.kind ~= "laserV" and trap.kind ~= "bomb" and hitMonster then
                 TriggerTrap(trap, hitMonster)
                 triggeredAny = true
+                if trap.kind == "laserH" or trap.kind == "laserV" then
+                    trap.triggered = true
+                    table.remove(traps_, i)
+                    removedAnyTrap = true
+                    pendingItemBoardRefill_ = true
+                end
             end
-            trap.turns = (trap.turns or 1) - 1
-            if trap.turns <= 0 then
+            if trap.triggered ~= true and trap.turns ~= nil and trap.lastTickTurn ~= turnId_ then
+                trap.turns = trap.turns - 1
+                trap.lastTickTurn = turnId_
+            end
+            if trap.triggered ~= true and trap.turns ~= nil and trap.turns <= 0 then
                 table.remove(traps_, i)
                 removedAnyTrap = true
+                pendingItemBoardRefill_ = true
             end
         end
     end
-    local removedAnyMonster = RemoveDeadMonsters()
+    local removedAnyMonster = false
+    if isItemTurnResolving_ then
+        if triggeredAny then pendingItemBoardRefill_ = true end
+        removedAnyMonster = false
+    else
+        removedAnyMonster = RemoveDeadMonsters()
+    end
     if removedAnyTrap then
+        if startDrop == false then return triggeredAny or removedAnyMonster or removedAnyTrap end
         return StartTrapRefillDrop()
     end
-    if (triggeredAny or removedAnyMonster) and StartEnemyDropAnimation ~= nil then
+    if (triggeredAny or removedAnyMonster) and startDrop ~= false and StartEnemyDropAnimation ~= nil then
         local drops = DropAndRefillBoard()
-        return StartEnemyDropAnimation(drops, 0)
+        local heroMoved = dropHeroMoved_
+        return StartEnemyDropAnimation(drops, 0, "monster", heroMoved)
     end
-    EnsureBoardHasMove()
-    return false
+    if startDrop ~= false then
+        EnsureBoardHasMove()
+    end
+    return triggeredAny or removedAnyMonster
 end
 
-function FireTurrets()
+function FireTurrets(startDrop)
     local killedAny = false
     local removedTurret = false
     for i = #traps_, 1, -1 do
@@ -1096,34 +1517,44 @@ function FireTurrets()
             if nearest then
                 trap.angle = math.atan(nearest.row - trap.row, nearest.col - trap.col)
                 AddItemTriggerEffect("turret", trap.row, trap.col, nearest.row, nearest.col)
-                AddCannonShell(trap, nearest)
-                DamageMonster(nearest, CONFIG.turretDamage, "炮击-")
-                if nearest.hp <= 0 then
-                    killedAny = true
-                end
+                local damage = GetRogueItemDamage(CONFIG.turretDamage)
+                AddCannonShell(trap, nearest, damage)
             end
             trap.turns = trap.turns - 1
             if trap.turns <= 0 then
                 table.remove(traps_, i)
                 removedTurret = true
+                pendingItemBoardRefill_ = true
             end
         end
     end
-    local removedAny = RemoveDeadMonsters()
+    local removedAny = false
+    if isItemTurnResolving_ then
+        if killedAny then pendingItemBoardRefill_ = true end
+    else
+        removedAny = RemoveDeadMonsters()
+    end
     if removedTurret then
+        if startDrop == false then return killedAny or removedAny or removedTurret end
         return StartTrapRefillDrop()
     end
-    if (killedAny or removedAny) and StartEnemyDropAnimation ~= nil then
+    if (killedAny or removedAny) and startDrop ~= false and StartEnemyDropAnimation ~= nil then
         local drops = DropAndRefillBoard()
-        return StartEnemyDropAnimation(drops, 0)
+        local heroMoved = dropHeroMoved_
+        return StartEnemyDropAnimation(drops, 0, "monster", heroMoved)
     end
-    EnsureBoardHasMove()
-    return false
+    if startDrop ~= false then
+        EnsureBoardHasMove()
+    end
+    return killedAny or removedAny
 end
 
-function DamageHero(amount, sourceRow, sourceCol)
+function DamageHero(amount, sourceRow, sourceCol, attackers)
     if gameState_ ~= "playing" then return end
+    hero_.hpBuffer = math.max(hero_.hpBuffer or hero_.hp or 0, hero_.hp or 0)
     hero_.hp = hero_.hp - amount
+    AddOperationLog("怪物攻击：" .. FormatAttackerList(attackers) .. " 对玩家造成 " .. tostring(amount) .. " 点伤害，玩家生命 " .. tostring(math.max(0, hero_.hp)) .. "/" .. tostring(hero_.maxHp))
+    AddHeroDamageHudParticles(amount)
     AddFloatText(hero_.row, hero_.col, "-" .. tostring(amount), { 255, 70, 70, 255 })
     AddParticles(sourceRow, sourceCol, { 210, 40, 32, 255 }, 8)
     screenShake_ = math.max(screenShake_, 7)
@@ -1259,27 +1690,21 @@ end
 
 function MonsterTurn()
     if gameState_ ~= "playing" then return end
-    turnId_ = turnId_ + 1
     local attackers = 0
-
-    if FireMissileSilos() then
-        return
-    end
-
-    local turretStartedDrop = FireTurrets()
-    if turretStartedDrop then return end
-    if CheckTriggeredTraps() then return end
+    local attackerList = {}
+    local maxAttackers = CONFIG.maxMonsterAttackersPerTurn or 3
 
     for index, monster in ipairs(monsters_) do
-        if monster.hp > 0 then
+        if monster.hp > 0 and attackers < maxAttackers then
             if IsInCrossRange(monster.row, monster.col, hero_.row, hero_.col, 1) then
-                attackers = attackers + 1
+                if monster.lastAttackTurn ~= turnId_ then
+                    monster.lastAttackTurn = turnId_
+                    attackers = attackers + 1
+                    table.insert(attackerList, monster)
+                end
             else
                 TryMoveMonster(index, monster)
                 if CheckTriggeredTraps() then return end
-                if monster.hp > 0 and IsInCrossRange(monster.row, monster.col, hero_.row, hero_.col, 1) then
-                    attackers = attackers + 1
-                end
             end
         end
     end
@@ -1290,8 +1715,8 @@ function MonsterTurn()
                 MarkMonsterAttack3D(monster)
             end
         end
-        DamageHero(attackers, hero_.row, hero_.col)
-        SetMessage("怪物逼近并攻击了主角。用 WASD 移动或消除周围符石", 2.0)
+        DamageHero(attackers, hero_.row, hero_.col, attackerList)
+        SetMessage("怪物逼近并攻击玩家。通过消除和道具清理威胁", 2.0)
     end
-    EnsureBoardStable(1)
+    StartWaitMonsterMovesThenResolve()
 end
