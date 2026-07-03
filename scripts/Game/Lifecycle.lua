@@ -31,6 +31,13 @@ function Start()
         end
     end
 
+    meowClearSound_ = cache:GetResource("Sound", "audio/sfx/meow_clear.ogg")
+    local soundNode = scene3D_:CreateChild("MatchClearSound")
+    meowSoundSource_ = soundNode:CreateComponent("SoundSource")
+    if meowClearSound_ == nil then
+        print("Meow clear sound not loaded")
+    end
+
     ResetGame()
     SyncScene3D()
     InitTapTapServices()
@@ -39,6 +46,7 @@ function Start()
     SubscribeToEvent("MouseButtonDown", "HandleMouseButtonDown")
     SubscribeToEvent("MouseButtonUp", "HandleMouseButtonUp")
     SubscribeToEvent("MouseMove", "HandleMouseMove")
+    SubscribeToEvent("MouseWheel", "HandleMouseWheel")
     SubscribeToEvent("TouchBegin", "HandleTouchBegin")
     SubscribeToEvent("TouchMove", "HandleTouchMove")
     SubscribeToEvent("TouchEnd", "HandleTouchEnd")

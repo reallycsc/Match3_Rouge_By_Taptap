@@ -109,8 +109,9 @@ function SpawnMonsters()
         { row = 2, col = 7 }, { row = 7, col = 2 },
     }
 
-    local targetCount = CONFIG.monsterCount + math.floor((wave_ - 1) * 0.75)
-    targetCount = Clamp(targetCount, 4, CONFIG.monsterMaxCount)
+    local extraCount = math.floor((wave_ - 1) * (CONFIG.monsterCountIncreasePerWave or 0))
+    local targetCount = CONFIG.monsterCount + extraCount
+    targetCount = Clamp(targetCount, 1, CONFIG.monsterMaxCount)
 
     for _, cell in ipairs(spawnCells) do
         if #monsters_ >= targetCount then break end
@@ -171,6 +172,14 @@ function ResetGame()
     dragTriggered_ = false
     turnId_ = 0
     pendingRogueReward_ = false
+    playerTurnActive_ = false
+    playerTurnTimer_ = 0
+    pendingPlayerTurnTimerAfterRender_ = false
+    startGamePromptVisible_ = false
+    startGameButtonRect_ = nil
+    activeRuneDrops_ = {}
+    currentTurnText_ = "玩家回合"
+    currentTurnKind_ = "player"
     turnBanner_ = nil
     turnBannerQueue_ = {}
     ResetRoguelikeState()
@@ -182,6 +191,7 @@ function ResetGame()
     SyncScene3D()
     SetMessage("符石生存开始：击败每波怪物后选择遗物、BUFF或道具", 3.0)
     ShowTurnBanner("玩家回合", "player")
+    SchedulePlayerTurnTimerAfterRender()
     print("Game reset: board generated, monsters=" .. tostring(#monsters_))
 end
 
@@ -440,6 +450,97 @@ function EnsureBoardHasMove()
     EnsureBoardStable(1)
 end
 
+function ActiveRuneDropCount()
+    return #(activeRuneDrops_ or {})
+end
+
+function IsRuneDropCell(row, col)
+    for _, drop in ipairs(activeRuneDrops_ or {}) do
+        if drop.toRow == row and drop.toCol == col then return true end
+    end
+    return false
+end
+
+function RemoveActiveRuneDropTarget(row, col)
+    for i = #(activeRuneDrops_ or {}), 1, -1 do
+        local drop = activeRuneDrops_[i]
+        if drop.toRow == row and drop.toCol == col then
+            table.remove(activeRuneDrops_, i)
+        end
+    end
+end
+
+function AddActiveRuneDrops(drops)
+    for _, drop in ipairs(drops or {}) do
+        RemoveActiveRuneDropTarget(drop.fromRow, drop.fromCol)
+        RemoveActiveRuneDropTarget(drop.toRow, drop.toCol)
+        table.insert(activeRuneDrops_, {
+            type = drop.type,
+            fromRow = drop.fromRow,
+            fromCol = drop.fromCol,
+            toRow = drop.toRow,
+            toCol = drop.toCol,
+            life = DROP_DURATION,
+            maxLife = DROP_DURATION,
+        })
+    end
+end
+
+function IsStableSwapCell(row, col)
+    if not IsValidCell(row, col) or IsRuneDropCell(row, col) or HasMonsterAt(row, col) or OccupiedByObstacle(row, col) then
+        return false
+    end
+    local object = BoardObjectAt(row, col)
+    return IsSwappableBoardObject(object)
+end
+
+function HasBlockingPlayerAnimation()
+    return currentAnim_ ~= nil and (currentAnim_.kind == "swap" or currentAnim_.kind == "itemSwapTrigger" or currentAnim_.kind == "clear")
+end
+
+function HasPendingPlayerResolution()
+    return currentAnim_ ~= nil or ActiveRuneDropCount() > 0 or HasPendingItemAnimations()
+end
+
+function StartPlayerTurnTimer()
+    playerTurnActive_ = true
+    pendingPlayerTurnTimerAfterRender_ = false
+    playerTurnTimer_ = CONFIG.playerTurnDuration or 2.0
+    playerTurnManualClearCount_ = 0
+end
+
+function SchedulePlayerTurnTimerAfterRender()
+    playerTurnActive_ = false
+    playerTurnTimer_ = CONFIG.playerTurnDuration or 2.0
+    pendingPlayerTurnTimerAfterRender_ = true
+    startGamePromptVisible_ = false
+end
+
+function StartPendingPlayerTurnTimerAfterRender()
+    if pendingPlayerTurnTimerAfterRender_ and gameState_ == "playing" then
+        pendingPlayerTurnTimerAfterRender_ = false
+        startGamePromptVisible_ = true
+    end
+end
+
+function StartGameFromPrompt()
+    if not startGamePromptVisible_ or gameState_ ~= "playing" then return false end
+    startGamePromptVisible_ = false
+    startGameButtonRect_ = nil
+    StartPlayerTurnTimer()
+    SetMessage("玩家回合开始，连续消除会刷新倒计时", 1.6)
+    return true
+end
+
+function EndPlayerTurnWhenStable()
+    if playerTurnActive_ then
+        playerTurnActive_ = false
+    end
+    if HasPendingPlayerResolution() then return false end
+    FinishPlayerMove()
+    return true
+end
+
 function AddCellUnique(cells, exists, row, col, gemType)
     local key = CellKey(row, col)
     if not exists[key] then
@@ -468,6 +569,7 @@ end
 
 function GetBoardGem(row, col)
     if row < 1 or row > BOARD_SIZE or col < 1 or col > BOARD_SIZE then return 0 end
+    if IsRuneDropCell(row, col) then return 0 end
     return board_[row][col]
 end
 
@@ -549,12 +651,12 @@ function FindMatches()
     local specials = {}
 
     for row = 1, BOARD_SIZE do
-        local runType = board_[row][1]
+        local runType = GetBoardGem(row, 1)
         local runStart = 1
         local runLength = 1
         for col = 2, BOARD_SIZE + 1 do
             local gemType = nil
-            if col <= BOARD_SIZE then gemType = board_[row][col] end
+            if col <= BOARD_SIZE then gemType = GetBoardGem(row, col) end
             if gemType == runType and gemType ~= 0 then
                 runLength = runLength + 1
             else
@@ -575,12 +677,12 @@ function FindMatches()
     end
 
     for col = 1, BOARD_SIZE do
-        local runType = board_[1][col]
+        local runType = GetBoardGem(1, col)
         local runStart = 1
         local runLength = 1
         for row = 2, BOARD_SIZE + 1 do
             local gemType = nil
-            if row <= BOARD_SIZE then gemType = board_[row][col] end
+            if row <= BOARD_SIZE then gemType = GetBoardGem(row, col) end
             if gemType == runType and gemType ~= 0 then
                 runLength = runLength + 1
             else
@@ -722,10 +824,14 @@ function IsTriggerTrapKind(kind)
     return kind == "laserH" or kind == "laserV" or kind == "bomb"
 end
 
+function IsManualTriggerTrapKind(kind)
+    return IsTriggerTrapKind(kind) or kind == "turret"
+end
+
 function IsSwappableBoardObject(object)
     if object == nil then return false end
     if object.kind == "gem" then return true end
-    if object.kind == "trap" then return IsTriggerTrapKind(object.ref.kind) end
+    if object.kind == "trap" then return IsManualTriggerTrapKind(object.ref.kind) end
     return false
 end
 
@@ -754,7 +860,7 @@ end
 
 function GetTriggerableTrapAt(row, col)
     local trap = TrapAt(row, col)
-    if trap ~= nil and IsTriggerTrapKind(trap.kind) then
+    if trap ~= nil and IsManualTriggerTrapKind(trap.kind) then
         return trap
     end
     return nil
@@ -781,36 +887,125 @@ function RemoveTrapInstance(trap)
     return false
 end
 
-function TriggerLaserTrapManually(trap)
-    AddLaserBeam(trap, nil)
-    local damaged = {}
+function GetLaserBeamHitProgress(beam, row, col)
+    local distance = nil
+    local sideDistance = nil
+    if beam.kind == "laserH" and row == beam.row then
+        distance = math.abs(col - beam.col)
+        if col < beam.col then
+            sideDistance = beam.col - 1
+        elseif col > beam.col then
+            sideDistance = BOARD_SIZE - beam.col
+        else
+            sideDistance = 1
+        end
+    elseif beam.kind == "laserV" and col == beam.col then
+        distance = math.abs(row - beam.row)
+        if row < beam.row then
+            sideDistance = beam.row - 1
+        elseif row > beam.row then
+            sideDistance = BOARD_SIZE - beam.row
+        else
+            sideDistance = 1
+        end
+    end
+    if distance == nil then return nil end
+    return distance / math.max(1, sideDistance or 1)
+end
+
+function ResolveLaserBeamHits(beam)
+    if beam == nil then return end
+    local progress = 1 - Clamp((beam.life or 0) / math.max(0.001, beam.maxLife or 0.36), 0, 1)
+
+    for _, monster in ipairs(monsters_) do
+        if monster.hp > 0 and beam.hitMonsters[monster] ~= true then
+            local hitProgress = GetLaserBeamHitProgress(beam, monster.row, monster.col)
+            if hitProgress ~= nil and progress >= hitProgress then
+                beam.hitMonsters[monster] = true
+                ResolveItemHitMonster(monster, beam.damage or GetRogueItemDamage(CONFIG.laserDamage), "激光-", { name = beam.kind == "laserH" and "横向激光" or "纵向激光", row = beam.row, col = beam.col, action = beam.action or "触发" })
+            end
+        end
+    end
+
+    for _, trap in ipairs(traps_) do
+        if CanChainTriggerTrap(trap) and beam.hitTraps[trap] ~= true then
+            local hitProgress = GetLaserBeamHitProgress(beam, trap.row, trap.col)
+            if hitProgress ~= nil and hitProgress > 0 and progress >= hitProgress then
+                beam.hitTraps[trap] = true
+                TriggerChainTrap(trap, "激光连锁")
+            end
+        end
+    end
+end
+
+function ResolveBombExplosionHits(explosion)
+    if explosion == nil then return end
+    local progress = 1 - Clamp((explosion.life or 0) / math.max(0.001, explosion.maxLife or 0.55), 0, 1)
+    local maxRadius = math.max(1, CONFIG.bombRadius or 1)
+    local currentRadius = progress * (maxRadius + 0.72)
+
+    for _, monster in ipairs(monsters_) do
+        if monster.hp > 0 and explosion.hitMonsters[monster] ~= true then
+            local distance = math.max(Abs(monster.row - explosion.row), Abs(monster.col - explosion.col))
+            if distance <= maxRadius and distance <= currentRadius then
+                explosion.hitMonsters[monster] = true
+                ResolveItemHitMonster(monster, explosion.damage or GetRogueItemDamage(CONFIG.bombDamage), "爆炸-", { name = "炸弹", row = explosion.row, col = explosion.col, action = explosion.action or "爆炸" })
+            end
+        end
+    end
+
+    for _, trap in ipairs(traps_) do
+        if CanChainTriggerTrap(trap) and explosion.hitTraps[trap] ~= true then
+            local distance = math.max(Abs(trap.row - explosion.row), Abs(trap.col - explosion.col))
+            if distance > 0 and distance <= maxRadius and distance <= currentRadius then
+                explosion.hitTraps[trap] = true
+                TriggerChainTrap(trap, "爆炸连锁")
+            end
+        end
+    end
+end
+
+function ResolveItemAnimationFinished()
+    local removedAny = RemoveDeadMonsters()
+    if removedAny then
+        pendingItemBoardRefill_ = true
+    end
+end
+
+function ResolveItemHitMonster(monster, amount, label, source)
+    if monster == nil or monster.hp <= 0 then return end
+    DamageMonster(monster, amount, label, source)
+end
+
+function CanChainTriggerTrap(trap)
+    return trap ~= nil and trap.triggered ~= true and IsTriggerTrapKind(trap.kind)
+end
+
+function FindChainTrapAt(row, col, sourceTrap)
+    for _, trap in ipairs(traps_) do
+        if trap ~= sourceTrap and CanChainTriggerTrap(trap) and trap.row == row and trap.col == col then
+            return trap
+        end
+    end
+    return nil
+end
+
+function TriggerLaserTrapEffect(trap, action)
+    AddLaserBeam(trap, action or "触发")
     if trap.kind == "laserH" then
         for col = 1, BOARD_SIZE do
             ClearGemWithoutAreaDamage(trap.row, col)
-        end
-        for _, monster in ipairs(monsters_) do
-            if monster.hp > 0 and monster.row == trap.row then
-                damaged[monster] = true
-            end
         end
     else
         for row = 1, BOARD_SIZE do
             ClearGemWithoutAreaDamage(row, trap.col)
         end
-        for _, monster in ipairs(monsters_) do
-            if monster.hp > 0 and monster.col == trap.col then
-                damaged[monster] = true
-            end
-        end
     end
-    for monster, _ in pairs(damaged) do
-        DamageMonster(monster, GetRogueItemDamage(CONFIG.laserDamage), "激光-", { name = "激光", row = trap.row, col = trap.col, action = "手动触发" })
-    end
-    AddOperationLog("手动触发：激光" .. FormatBoardCell(trap.row, trap.col) .. " 清除路径符石")
+    AddOperationLog((action or "触发") .. "：激光" .. FormatBoardCell(trap.row, trap.col) .. " 沿瞄准线发射")
 end
 
-function TriggerBombTrapManually(trap)
-    AddBombExplosion(trap)
+function TriggerBombTrapEffect(trap, action)
+    AddBombExplosion(trap, action or "爆炸")
     local minRow = math.max(1, trap.row - CONFIG.bombRadius)
     local maxRow = math.min(BOARD_SIZE, trap.row + CONFIG.bombRadius)
     local minCol = math.max(1, trap.col - CONFIG.bombRadius)
@@ -820,30 +1015,78 @@ function TriggerBombTrapManually(trap)
             ClearGemWithoutAreaDamage(row, col)
         end
     end
-    for _, monster in ipairs(monsters_) do
-        if monster.hp > 0 and IsNearCell(trap.row, trap.col, monster.row, monster.col, CONFIG.bombRadius) then
-            DamageMonster(monster, GetRogueItemDamage(CONFIG.bombDamage), "爆炸-", { name = "炸弹", row = trap.row, col = trap.col, action = "手动爆炸" })
-        end
+    AddOperationLog((action or "触发") .. "：炸弹" .. FormatBoardCell(trap.row, trap.col) .. " 向外扩散爆炸")
+end
+
+function TriggerTrapEffect(trap, action)
+    if not CanChainTriggerTrap(trap) then return false end
+    trap.triggered = true
+    if trap.kind == "laserH" or trap.kind == "laserV" then
+        TriggerLaserTrapEffect(trap, action)
+    elseif trap.kind == "bomb" then
+        TriggerBombTrapEffect(trap, action)
+    else
+        return false
     end
-    AddOperationLog("手动触发：炸弹" .. FormatBoardCell(trap.row, trap.col) .. " 爆破 3x3 范围")
+    RemoveTrapInstance(trap)
+    itemSignature3D_ = nil
+    pendingItemBoardRefill_ = true
+    return true
+end
+
+function TriggerChainTrap(trap, source)
+    if trap == nil then return false end
+    local sourceName = source or "连锁触发"
+    return TriggerTrapEffect(trap, sourceName)
+end
+
+function TriggerLaserTrapManually(trap)
+    return TriggerTrapEffect(trap, "手动触发")
+end
+
+function TriggerBombTrapManually(trap)
+    return TriggerTrapEffect(trap, "手动触发")
+end
+
+function TriggerTurretTrapManually(trap)
+    if trap == nil or trap.kind ~= "turret" then return false end
+    local nearest = FindNearestMonster(trap)
+    if nearest == nil then
+        SetMessage("炮台周围没有可攻击的怪物", 1.2)
+        return false
+    end
+    trap.angle = math.atan(nearest.row - trap.row, nearest.col - trap.col)
+    trap.targetRow = nearest.row
+    trap.targetCol = nearest.col
+    AddItemTriggerEffect("turret", trap.row, trap.col, nearest.row, nearest.col)
+    AddCannonShell(trap, nearest, GetRogueItemDamage(CONFIG.turretDamage))
+    trap.turns = math.max(0, (trap.turns or 1) - 1)
+    AddOperationLog("手动触发：炮台" .. FormatBoardCell(trap.row, trap.col) .. " 向怪物" .. FormatBoardCell(nearest.row, nearest.col) .. " 开火")
+    if trap.turns <= 0 then
+        RemoveTrapInstance(trap)
+        itemSignature3D_ = nil
+        pendingItemBoardRefill_ = true
+    end
+    return true
 end
 
 function TriggerTrapManually(trap)
     if trap == nil or gameState_ ~= "playing" or isAnimating_ then return false end
+    local triggered = false
     if trap.kind == "laserH" or trap.kind == "laserV" then
-        TriggerLaserTrapManually(trap)
-        SetMessage("激光向两侧发射，清除路径符石并伤害路径怪物", 1.8)
+        triggered = TriggerLaserTrapManually(trap)
+        SetMessage("激光向两侧发射，命中怪物并可连锁触发道具", 1.8)
     elseif trap.kind == "bomb" then
-        TriggerBombTrapManually(trap)
-        SetMessage("炸弹爆发 3x3 冲击波，清除范围符石并伤害范围怪物", 1.8)
+        triggered = TriggerBombTrapManually(trap)
+        SetMessage("炸弹冲击波向外扩散，命中怪物并可连锁触发道具", 1.8)
+    elseif trap.kind == "turret" then
+        triggered = TriggerTurretTrapManually(trap)
+        SetMessage("炮台锁定最近怪物并开火", 1.5)
     else
         return false
     end
+    if not triggered then return false end
 
-    RemoveTrapInstance(trap)
-    RemoveDeadMonsters()
-    local drops = DropAndRefillBoard()
-    local heroMoved = dropHeroMoved_
     selected_ = nil
     dragStart_ = nil
     dragTriggered_ = false
@@ -851,12 +1094,18 @@ function TriggerTrapManually(trap)
     pendingMove_ = false
     hero_.attackFlash = 0.42
     RunItemTurn()
+    pendingMonsterTurn_ = true
+    local drops = DropAndRefillBoard()
+    local heroMoved = dropHeroMoved_
     if #drops > 0 then
-        pendingMonsterTurn_ = true
-        isItemTurnResolving_ = false
         StartEnemyDropAnimation(drops, 0, "item", heroMoved)
     else
-        StartMonsterTurnAfterItemAnimations()
+        currentAnim_ = {
+            kind = "waitItems",
+            elapsed = 0,
+            duration = 0.05,
+        }
+        isAnimating_ = true
     end
     return true
 end
@@ -1048,14 +1297,27 @@ function RemoveDeadMonsters()
     return removedAny
 end
 
-function ApplyMatchDamage(matches, combo, specials, preferredCells)
+function PlayMeowClearSound(combo, manualClearCount)
+    if meowClearSound_ == nil or meowSoundSource_ == nil then return end
+    local baseFrequency = meowClearSound_:GetFrequency()
+    if baseFrequency == nil or baseFrequency <= 0 then
+        baseFrequency = 44100
+    end
+    local manualStep = math.max(0, (manualClearCount or 1) - 1)
+    local chainStep = math.max(0, (combo or 1) - 1)
+    local pitch = Clamp(1.0 + manualStep * 0.18 + chainStep * 0.04, 1.0, 1.9)
+    meowSoundSource_:Play(meowClearSound_, baseFrequency * pitch, 0.78)
+end
+
+function ApplyMatchDamage(matches, combo, specials, preferredCells, manualClearCount)
+    PlayMeowClearSound(combo, manualClearCount)
     SpawnSpecialTraps(specials or {}, preferredCells)
     local damagedMonsters = {}
     local matchedCount = #matches
 
     for _, cell in ipairs(matches) do
         table.insert(matchEffects_, { row = cell.row, col = cell.col, life = 0.35, maxLife = 0.35, type = cell.type })
-        AddParticles(cell.row, cell.col, GEM_COLORS[cell.type], 5)
+        AddParticles(cell.row, cell.col, GEM_COLORS[cell.type], 8, { fromRuneCenter = true, minSpeed = 52, speedRange = 105, gravity = 0, minSize = 2, sizeRange = 3 })
 
         for index, monster in ipairs(monsters_) do
             if monster.hp > 0 and IsInCrossRange(cell.row, cell.col, monster.row, monster.col, MATCH_DAMAGE_RADIUS) then
@@ -1069,12 +1331,8 @@ function ApplyMatchDamage(matches, combo, specials, preferredCells)
         local monster = monsters_[index]
         if shouldDamage and monster and monster.hp > 0 then
             local finalDamage = matchedCount + GetRogueBuff("matchDamageBonus")
-            monster.hpBuffer = math.max(monster.hpBuffer or monster.hp or 0, monster.hp or 0)
-            monster.hp = monster.hp - finalDamage
+            DamageMonster(monster, finalDamage, "-", { name = "符石爆裂", row = monster.row, col = monster.col, action = "波及" })
             anyDamage = true
-            AddOperationLog("消除伤害：玩家消除 " .. tostring(matchedCount) .. " 个符石，波及怪物" .. FormatBoardCell(monster.row, monster.col) .. "，造成 " .. tostring(finalDamage) .. " 点伤害，怪物生命 " .. FormatMonsterHealth(monster))
-            AddFloatText(monster.row, monster.col, "-" .. tostring(finalDamage), { 255, 80, 60, 255 })
-            AddParticles(monster.row, monster.col, { 255, 80, 42, 255 }, 12)
             print("Monster damaged: index=" .. tostring(index) .. ", damage=" .. tostring(finalDamage) .. ", hp=" .. tostring(monster.hp))
         end
     end
@@ -1252,11 +1510,22 @@ end
 function DamageMonster(monster, amount, label, source)
     monster.hpBuffer = math.max(monster.hpBuffer or monster.hp or 0, monster.hp or 0)
     monster.hp = monster.hp - amount
+    monster.hitFlash = 0.32
+    monster.hitPulse = 0.26
     if source ~= nil and source ~= "" then
         AddOperationLog("道具伤害：" .. FormatDamageSource(source) .. "，命中怪物" .. FormatBoardCell(monster.row, monster.col) .. "，造成 " .. tostring(amount) .. " 点伤害，怪物生命 " .. FormatMonsterHealth(monster))
     end
-    AddFloatText(monster.row, monster.col, (label or "-") .. tostring(amount), { 255, 92, 60, 255 })
-    AddParticles(monster.row, monster.col, { 255, 84, 42, 255 }, 14)
+    local angle = -math.pi * 0.78 + (math.random() - 0.5) * 0.9
+    AddFloatText(monster.row, monster.col, (label or "-") .. tostring(amount), { 255, 92, 60, 255 }, {
+        angle = angle,
+        speed = 86,
+        gravity = 220,
+        life = 0.95,
+        size = 22,
+        pop = true,
+        offsetY = -tile_ * 0.05,
+    })
+    AddParticles(monster.row, monster.col, { 255, 84, 42, 255 }, 18)
 end
 
 function FindLaserTarget(trap)
@@ -1393,26 +1662,36 @@ function AddCannonShell(trap, monster, damage)
     })
 end
 
-function AddBombExplosion(trap)
+function AddBombExplosion(trap, action)
     local x, y = CellCenter(trap.row, trap.col)
     table.insert(bombExplosions_, {
+        row = trap.row,
+        col = trap.col,
         x = x,
         y = y,
+        action = action or "爆炸",
+        damage = GetRogueItemDamage(CONFIG.bombDamage),
+        hitMonsters = {},
+        hitTraps = {},
         life = 0.55,
         maxLife = 0.55,
     })
     AddItemTriggerEffect("bomb", trap.row, trap.col, trap.row, trap.col)
 end
 
-function AddLaserBeam(trap, monster)
-    local targetRow = monster and monster.row or trap.row
-    local targetCol = monster and monster.col or trap.col
+function AddLaserBeam(trap, action)
+    local targetRow = trap.targetRow or trap.row
+    local targetCol = trap.targetCol or trap.col
     table.insert(laserBeams_, {
         kind = trap.kind,
         row = trap.row,
         col = trap.col,
         targetRow = targetRow,
         targetCol = targetCol,
+        action = action or "触发",
+        damage = GetRogueItemDamage(CONFIG.laserDamage),
+        hitMonsters = {},
+        hitTraps = {},
         life = 0.36,
         maxLife = 0.36,
     })
@@ -1420,20 +1699,13 @@ function AddLaserBeam(trap, monster)
 end
 
 function TriggerTrap(trap, monster)
-    if trap.kind == "laserH" then
-        AddLaserBeam(trap, monster)
-        DamageMonster(monster, GetRogueItemDamage(CONFIG.laserDamage), "激光-", { name = "横向激光", row = trap.row, col = trap.col, action = "触发" })
-    elseif trap.kind == "laserV" then
-        AddLaserBeam(trap, monster)
-        DamageMonster(monster, GetRogueItemDamage(CONFIG.laserDamage), "激光-", { name = "纵向激光", row = trap.row, col = trap.col, action = "触发" })
+    if trap == nil then return false end
+    if trap.kind == "laserH" or trap.kind == "laserV" then
+        return TriggerTrapEffect(trap, "触发")
     elseif trap.kind == "bomb" then
-        AddBombExplosion(trap)
-        for _, target in ipairs(monsters_) do
-            if target.hp > 0 and IsNearCell(trap.row, trap.col, target.row, target.col, CONFIG.bombRadius) then
-                DamageMonster(target, GetRogueItemDamage(CONFIG.bombDamage), "爆炸-", { name = "炸弹", row = trap.row, col = trap.col, action = "爆炸" })
-            end
-        end
+        return TriggerTrapEffect(trap, "爆炸")
     end
+    return false
 end
 
 StartAutoClearAnimation = nil
@@ -1464,14 +1736,10 @@ function CheckTriggeredTraps(startDrop)
                     end
                 end
             end
-            if trap.kind ~= "laserH" and trap.kind ~= "laserV" and trap.kind ~= "bomb" and hitMonster then
-                TriggerTrap(trap, hitMonster)
-                triggeredAny = true
-                if trap.kind == "laserH" or trap.kind == "laserV" then
-                    trap.triggered = true
-                    table.remove(traps_, i)
+            if hitMonster then
+                if TriggerTrap(trap, hitMonster) then
+                    triggeredAny = true
                     removedAnyTrap = true
-                    pendingItemBoardRefill_ = true
                 end
             end
             if trap.triggered ~= true and trap.turns ~= nil and trap.lastTickTurn ~= turnId_ then
@@ -1660,13 +1928,7 @@ function MoveMonsterToCell(monster, cell)
     ClearActorCells()
 end
 
-function TryMoveMonster(index, monster)
-    local pathStep = FindMonsterPathStep(index, monster)
-    if pathStep then
-        MoveMonsterToCell(monster, pathStep)
-        return true
-    end
-
+function GetMonsterFallbackMoveCell(index, monster)
     local rowDelta = hero_.row - monster.row
     local colDelta = hero_.col - monster.col
     local options = {}
@@ -1681,9 +1943,67 @@ function TryMoveMonster(index, monster)
 
     for _, cell in ipairs(options) do
         if not IsMonsterMoveCellBlocked(cell.row, cell.col, index) then
-            MoveMonsterToCell(monster, cell)
-            return true
+            return cell
         end
+    end
+    return nil
+end
+
+function GetMonsterNextMoveCell(index, monster)
+    local pathStep = FindMonsterPathStep(index, monster)
+    if pathStep then return pathStep end
+    return GetMonsterFallbackMoveCell(index, monster)
+end
+
+function GetMonsterAttackDamage(monster)
+    return math.max(1, monster and monster.attack or 1)
+end
+
+function CountPredictedAttackersBefore(monsterIndex)
+    local count = 0
+    local maxAttackers = CONFIG.maxMonsterAttackersPerTurn or 3
+    local nextMonsterTurnId = turnId_ + 1
+    for index = 1, monsterIndex - 1 do
+        local monster = monsters_[index]
+        if monster ~= nil and monster.hp > 0 and count < maxAttackers then
+            if IsInCrossRange(monster.row, monster.col, hero_.row, hero_.col, 1) and monster.lastAttackTurn ~= nextMonsterTurnId then
+                count = count + 1
+            end
+        end
+    end
+    return count
+end
+
+function PredictMonsterIntent(index, monster)
+    if gameState_ ~= "playing" or monster == nil or monster.hp <= 0 then return nil end
+    local maxAttackers = CONFIG.maxMonsterAttackersPerTurn or 3
+    if CountPredictedAttackersBefore(index) >= maxAttackers then return nil end
+
+    if IsInCrossRange(monster.row, monster.col, hero_.row, hero_.col, 1) then
+        if monster.lastAttackTurn ~= turnId_ + 1 then
+            return { kind = "attack", damage = GetMonsterAttackDamage(monster) }
+        end
+        return nil
+    end
+
+    local cell = GetMonsterNextMoveCell(index, monster)
+    if cell ~= nil then
+        return {
+            kind = "move",
+            row = cell.row,
+            col = cell.col,
+            dr = cell.row - monster.row,
+            dc = cell.col - monster.col,
+        }
+    end
+    return nil
+end
+
+function TryMoveMonster(index, monster)
+    local cell = GetMonsterNextMoveCell(index, monster)
+    if cell then
+        MoveMonsterToCell(monster, cell)
+        return true
     end
     return false
 end
@@ -1691,6 +2011,7 @@ end
 function MonsterTurn()
     if gameState_ ~= "playing" then return end
     local attackers = 0
+    local totalDamage = 0
     local attackerList = {}
     local maxAttackers = CONFIG.maxMonsterAttackersPerTurn or 3
 
@@ -1700,6 +2021,7 @@ function MonsterTurn()
                 if monster.lastAttackTurn ~= turnId_ then
                     monster.lastAttackTurn = turnId_
                     attackers = attackers + 1
+                    totalDamage = totalDamage + GetMonsterAttackDamage(monster)
                     table.insert(attackerList, monster)
                 end
             else
@@ -1715,7 +2037,7 @@ function MonsterTurn()
                 MarkMonsterAttack3D(monster)
             end
         end
-        DamageHero(attackers, hero_.row, hero_.col, attackerList)
+        DamageHero(totalDamage, hero_.row, hero_.col, attackerList)
         SetMessage("怪物逼近并攻击玩家。通过消除和道具清理威胁", 2.0)
     end
     StartWaitMonsterMovesThenResolve()

@@ -38,17 +38,32 @@ end
 
 function GetRuneMaterial3D(gemType)
     local color = ToColor255(GEM_COLORS[gemType] or { 255, 255, 255, 255 })
-    return CreatePBRMaterial3D("rune_" .. tostring(gemType), color, 0.0, 0.28, 0.45)
+    return CreatePBRMaterial3D("rune_sphere_" .. tostring(gemType), color, 0.0, 0.56, 0.1)
 end
 
-function GetRuneIconMaterial3D(gemType)
+function GetSelectedRuneMaterial3D(gemType)
     local base = ToColor255(GEM_COLORS[gemType] or { 255, 255, 255, 255 })
-    return CreatePBRMaterial3D("rune_icon_" .. tostring(gemType), Color(
-        math.min(base.r * 1.7 + 0.15, 1.0),
-        math.min(base.g * 1.7 + 0.15, 1.0),
-        math.min(base.b * 1.7 + 0.15, 1.0),
+    local color = Color(
+        math.min(base.r * 1.25 + 0.18, 1.0),
+        math.min(base.g * 1.25 + 0.18, 1.0),
+        math.min(base.b * 1.25 + 0.18, 1.0),
         1.0
-    ), 0.1, 0.18, 1.2)
+    )
+    return CreatePBRMaterial3D("rune_sphere_selected_" .. tostring(gemType), color, 0.0, 0.34, 0.9)
+end
+
+function IsRuneSelected3D(row, col)
+    if selected_ ~= nil and selected_.row == row and selected_.col == col then return true end
+    if dragStart_ ~= nil and dragStart_.row == row and dragStart_.col == col then return true end
+    return false
+end
+
+function GetRuneDiameter3D()
+    return 1.0
+end
+
+function GetRuneCenterY3D()
+    return CONFIG.visual3D.floorY + GetRuneDiameter3D() * 0.5
 end
 
 function BoardToWorld(row, col)
@@ -79,6 +94,37 @@ function ConfigureSceneLight3D(lightGroup)
     end
 end
 
+function ApplyCameraZoom3D()
+    if cameraNode3D_ == nil then return end
+    local target = CONFIG.visual3D.cameraTarget
+    local basePos = CONFIG.visual3D.cameraPosition
+    local zoom = Clamp(cameraZoom3D_ or 1.0, 0.72, 1.35)
+    cameraZoom3D_ = zoom
+    local offset = basePos - target
+    cameraNode3D_.position = target + offset * zoom
+    cameraNode3D_:LookAt(target)
+end
+
+function UpdateCameraZoom3D(timeStep)
+    if cameraNode3D_ == nil then return end
+    cameraZoomTarget3D_ = Clamp(cameraZoomTarget3D_ or cameraZoom3D_ or 1.0, 0.72, 1.35)
+    cameraZoom3D_ = cameraZoom3D_ or cameraZoomTarget3D_
+    local diff = cameraZoomTarget3D_ - cameraZoom3D_
+    if math.abs(diff) < 0.0005 then
+        cameraZoom3D_ = cameraZoomTarget3D_
+    else
+        local step = math.min(1.0, (timeStep or 0) * 12.0)
+        cameraZoom3D_ = cameraZoom3D_ + diff * step
+    end
+    ApplyCameraZoom3D()
+end
+
+function AdjustCameraZoom3D(delta)
+    if delta == nil or delta == 0 then return end
+    local direction = delta > 0 and 1 or -1
+    cameraZoomTarget3D_ = Clamp((cameraZoomTarget3D_ or cameraZoom3D_ or 1.0) - direction * 0.045, 0.72, 1.35)
+end
+
 function CreateScene3D()
     scene3D_ = Scene:new()
     scene3D_:CreateComponent("Octree")
@@ -97,6 +143,8 @@ function CreateScene3D()
     end
 
     cameraNode3D_ = scene3D_:CreateChild("Camera")
+    cameraZoom3D_ = 1.0
+    cameraZoomTarget3D_ = 1.0
     cameraNode3D_.position = CONFIG.visual3D.cameraPosition
     cameraNode3D_:LookAt(CONFIG.visual3D.cameraTarget)
     camera3D_ = cameraNode3D_:CreateComponent("Camera")
@@ -294,32 +342,15 @@ function CreateRuneGrid3D()
             markerModel:SetMaterial(selectionMaterial3D_)
             cellMarkers3D_[row][col] = marker
 
-            local node = boardRoot3D_:CreateChild("RuneCube")
-            local cube = node:CreateChild("CubeBody")
-            cube.scale = Vector3(CONFIG.visual3D.cellSize * 0.78, CONFIG.visual3D.runeHeight, CONFIG.visual3D.cellSize * 0.78)
-            local cubeModel = cube:CreateComponent("StaticModel")
-            cubeModel:SetModel(cache:GetResource("Model", "Models/Box.mdl"))
-            cubeModel.castShadows = true
-            runeModels3D_[row][col] = cubeModel
-
-            local icons = {}
+            local node = boardRoot3D_:CreateChild("RuneSphere")
+            local model = node:CreateComponent("StaticModel")
+            model:SetModel(cache:GetResource("Model", "Models/Sphere.mdl"))
+            model.castShadows = true
             runeNodes3D_[row][col] = node
-            runeIconNodes3D_[row][col] = icons
+            runeModels3D_[row][col] = model
+            runeIconNodes3D_[row][col] = {}
         end
     end
-end
-
-function CreateRuneIcon3D(parent, icons, gemType, modelPath, scale, rotation)
-    local node = parent:CreateChild("RuneIcon" .. tostring(gemType))
-    node.position = Vector3(0, CONFIG.visual3D.runeHeight * 0.58 + 0.04, 0)
-    node.scale = scale
-    node.rotation = rotation
-    node.enabled = false
-    local model = node:CreateComponent("StaticModel")
-    model:SetModel(cache:GetResource("Model", modelPath))
-    model:SetMaterial(GetRuneIconMaterial3D(gemType))
-    model.castShadows = false
-    icons[gemType] = node
 end
 
 function SetRuneNodeType3D(row, col, gemType)
@@ -345,18 +376,21 @@ function SetRuneNodeType3D(row, col, gemType)
     end
     node.enabled = true
     model.enabled = true
-    model:SetMaterial(GetRuneMaterial3D(gemType))
-    for iconType, iconNode in pairs(icons) do
-        iconNode.enabled = iconType == gemType
+    if IsRuneSelected3D(row, col) then
+        model:SetMaterial(GetSelectedRuneMaterial3D(gemType))
+    else
+        model:SetMaterial(GetRuneMaterial3D(gemType))
     end
 end
 
-function SetRuneNodeTransform3D(row, col, pos, scaleMul)
+function SetRuneNodeTransform3D(row, col, pos, scaleMul, yScaleMul)
     local node = runeNodes3D_[row] and runeNodes3D_[row][col]
     if node == nil then return end
     node.position = pos
-    local s = scaleMul or 1.0
-    node.scale = Vector3(s, s, s)
+    local diameter = GetRuneDiameter3D()
+    local sxz = diameter * (scaleMul or 1.0)
+    local sy = diameter * (yScaleMul or scaleMul or 1.0)
+    node.scale = Vector3(sxz, sy, sxz)
     node.rotation = Quaternion(0, Vector3.UP)
 end
 
@@ -371,6 +405,7 @@ function IsActorCell3D(row, col)
 end
 
 function IsMovingRuneDestination3D(row, col)
+    if IsRuneDropCell(row, col) then return true end
     for _, move in ipairs(monsterMoves_ or {}) do
         if move.gemType ~= nil and move.gemType ~= 0 and move.fromRow == row and move.fromCol == col then
             return true
@@ -389,7 +424,11 @@ function UpdateRuneGrid3D()
                 gemType = 0
             end
             SetRuneNodeType3D(row, col, gemType)
-            SetRuneNodeTransform3D(row, col, BoardToWorldAt(row, col, CONFIG.visual3D.floorY + CONFIG.visual3D.runeHeight * 0.5), 1.0)
+            local scale = 1.0
+            if gemType ~= 0 and IsRuneSelected3D(row, col) then
+                scale = 1.08 + math.sin(time_ * 10.0) * 0.035
+            end
+            SetRuneNodeTransform3D(row, col, BoardToWorldAt(row, col, GetRuneCenterY3D()), scale)
             if cellMarkers3D_[row] and cellMarkers3D_[row][col] then
                 cellMarkers3D_[row][col].enabled = selected_ ~= nil and selected_.row == row and selected_.col == col and not IsActorCell3D(row, col)
             end
@@ -397,7 +436,20 @@ function UpdateRuneGrid3D()
     end
 
     ApplyMonsterMoveRuneAnimation3D()
+    ApplyActiveRuneDrops3D()
     ApplyRuneAnimation3D()
+end
+
+function ApplyActiveRuneDrops3D()
+    for _, drop in ipairs(activeRuneDrops_ or {}) do
+        local t = 1 - Clamp((drop.life or 0) / math.max(0.001, drop.maxLife or DROP_DURATION), 0, 1)
+        local eased = EaseOutBack(t)
+        local from = BoardToWorld(drop.fromRow, drop.fromCol)
+        from = Vector3(from.x, GetRuneCenterY3D(), from.z)
+        local to = BoardToWorld(drop.toRow, drop.toCol)
+        SetRuneNodeType3D(drop.toRow, drop.toCol, drop.type)
+        SetRuneNodeTransform3D(drop.toRow, drop.toCol, Vector3(Lerp(from.x, to.x, eased), Lerp(from.y, GetRuneCenterY3D(), eased), Lerp(from.z, to.z, eased)), 1.0)
+    end
 end
 
 function ApplyMonsterMoveRuneAnimation3D()
@@ -407,7 +459,7 @@ function ApplyMonsterMoveRuneAnimation3D()
             local eased = EaseInOut(t)
             local from = BoardToWorld(move.toRow, move.toCol)
             local to = BoardToWorld(move.fromRow, move.fromCol)
-            local y = CONFIG.visual3D.floorY + CONFIG.visual3D.runeHeight * 0.5 + math.sin(t * math.pi) * 0.08
+            local y = GetRuneCenterY3D() + math.sin(t * math.pi) * 0.08
             SetRuneNodeType3D(move.fromRow, move.fromCol, move.gemType)
             SetRuneNodeTransform3D(move.fromRow, move.fromCol, Vector3(Lerp(from.x, to.x, eased), y, Lerp(from.z, to.z, eased)), 1.0)
         end
@@ -424,7 +476,7 @@ function ApplyRuneAnimation3D()
         if anim.reverse then eased = 1 - eased end
         local aFrom = BoardToWorld(anim.a.row, anim.a.col)
         local bFrom = BoardToWorld(anim.b.row, anim.b.col)
-        local y = CONFIG.visual3D.floorY + CONFIG.visual3D.runeHeight * 0.5 + math.sin(t * math.pi) * 0.12
+        local y = GetRuneCenterY3D() + math.sin(t * math.pi) * 0.12
         SetRuneNodeType3D(anim.a.row, anim.a.col, anim.typeB)
         SetRuneNodeType3D(anim.b.row, anim.b.col, anim.typeA)
         SetRuneNodeTransform3D(anim.a.row, anim.a.col, Vector3(Lerp(aFrom.x, bFrom.x, eased), y, Lerp(aFrom.z, bFrom.z, eased)), 1.06)
@@ -433,7 +485,7 @@ function ApplyRuneAnimation3D()
         local eased = EaseInOut(t)
         local aFrom = BoardToWorld(anim.a.row, anim.a.col)
         local bFrom = BoardToWorld(anim.b.row, anim.b.col)
-        local y = CONFIG.visual3D.floorY + CONFIG.visual3D.runeHeight * 0.5 + math.sin(t * math.pi) * 0.12
+        local y = GetRuneCenterY3D() + math.sin(t * math.pi) * 0.12
         if anim.objA.kind == "gem" then
             SetRuneNodeType3D(anim.a.row, anim.a.col, anim.objA.gemType)
             SetRuneNodeTransform3D(anim.a.row, anim.a.col, Vector3(Lerp(aFrom.x, bFrom.x, eased), y, Lerp(aFrom.z, bFrom.z, eased)), 1.06)
@@ -443,18 +495,23 @@ function ApplyRuneAnimation3D()
             SetRuneNodeTransform3D(anim.b.row, anim.b.col, Vector3(Lerp(bFrom.x, aFrom.x, eased), y, Lerp(bFrom.z, aFrom.z, eased)), 1.06)
         end
     elseif anim.kind == "clear" then
-        local pulse = 1.0 + math.sin(t * math.pi) * 0.35
+        local squash = math.sin(Clamp(t / 0.42, 0, 1) * math.pi)
+        local settle = math.sin(Clamp((t - 0.18) / 0.62, 0, 1) * math.pi)
+        local fadeEase = EaseOutCubic(t)
+        local sxz = 1.0 + squash * 0.16 + settle * 0.08
+        local sy = 1.0 - squash * 0.18 + settle * 0.12
+        local lift = math.sin(t * math.pi) * 0.16
         for _, cell in ipairs(anim.matches or {}) do
-            SetRuneNodeTransform3D(cell.row, cell.col, BoardToWorldAt(cell.row, cell.col, CONFIG.visual3D.floorY + CONFIG.visual3D.runeHeight * 0.5 + t * 0.12), pulse)
+            SetRuneNodeTransform3D(cell.row, cell.col, BoardToWorldAt(cell.row, cell.col, GetRuneCenterY3D() + lift + fadeEase * 0.04), sxz, sy)
         end
     elseif anim.kind == "drop" or anim.kind == "enemyDrop" then
         local eased = EaseOutBack(t)
         for _, drop in ipairs(anim.drops or {}) do
             local from = BoardToWorld(drop.fromRow, drop.fromCol)
-            from = Vector3(from.x, CONFIG.visual3D.floorY + CONFIG.visual3D.runeHeight * 0.5, from.z)
+            from = Vector3(from.x, GetRuneCenterY3D(), from.z)
             local to = BoardToWorld(drop.toRow, drop.toCol)
             SetRuneNodeType3D(drop.toRow, drop.toCol, drop.type)
-            SetRuneNodeTransform3D(drop.toRow, drop.toCol, Vector3(Lerp(from.x, to.x, eased), Lerp(from.y, CONFIG.visual3D.floorY + CONFIG.visual3D.runeHeight * 0.5, eased), Lerp(from.z, to.z, eased)), 1.0)
+            SetRuneNodeTransform3D(drop.toRow, drop.toCol, Vector3(Lerp(from.x, to.x, eased), Lerp(from.y, GetRuneCenterY3D(), eased), Lerp(from.z, to.z, eased)), 1.0)
         end
     end
 end
@@ -522,6 +579,8 @@ function UpdateMonsterVisuals3D(timeStep)
                 pos = Vector3(Lerp(from.x, to.x, eased), CONFIG.visual3D.floorY, Lerp(from.z, to.z, eased))
                 movePulse = math.sin(t * math.pi) * 0.24
             end
+            local hitT = Clamp((monster.hitFlash or 0) / 0.32, 0, 1)
+            local hitPulse = math.sin((1 - Clamp((monster.hitPulse or 0) / 0.26, 0, 1)) * math.pi)
             if monster.attackFlash ~= nil and monster.attackFlash > 0 then
                 if monster.attackAnim3D == nil then
                     monster.attackAnim3D = PickCycledAnimation3D(monster, { "attackMeleeRight", "attackMeleeLeft", "attackKickRight", "attackKickLeft" })
@@ -537,13 +596,13 @@ function UpdateMonsterVisuals3D(timeStep)
                 if len > 0.001 then
                     pos = Vector3(pos.x + dx / len * lunge, pos.y, pos.z + dz / len * lunge)
                 end
-                node.scale = Vector3(CONFIG.visual3D.monster.scale * (1.0 + lunge * 0.22), CONFIG.visual3D.monster.scale * (1.0 - lunge * 0.1), CONFIG.visual3D.monster.scale * (1.0 + lunge * 0.22))
+                node.scale = Vector3(CONFIG.visual3D.monster.scale * (1.0 + lunge * 0.22 + hitPulse * 0.18), CONFIG.visual3D.monster.scale * (1.0 - lunge * 0.1 - hitPulse * 0.08), CONFIG.visual3D.monster.scale * (1.0 + lunge * 0.22 + hitPulse * 0.18))
             else
                 monster.attackAnim3D = nil
                 if move == nil then
                     PlayMonsterAnimation3D(entry, "idle", true)
                 end
-                node.scale = Vector3(CONFIG.visual3D.monster.scale, CONFIG.visual3D.monster.scale, CONFIG.visual3D.monster.scale)
+                node.scale = Vector3(CONFIG.visual3D.monster.scale * (1.0 + hitPulse * 0.18), CONFIG.visual3D.monster.scale * (1.0 - hitPulse * 0.08), CONFIG.visual3D.monster.scale * (1.0 + hitPulse * 0.18))
             end
             node.position = Vector3(pos.x, CONFIG.visual3D.floorY + movePulse, pos.z)
             local heroPos = BoardToWorld(hero_.row, hero_.col)
@@ -743,6 +802,7 @@ end
 function UpdateScene3D(timeStep)
     if scene3D_ == nil then return end
     lastSceneTimeStep3D_ = timeStep
+    UpdateCameraZoom3D(timeStep)
     UpdateRuneGrid3D()
     UpdateHeroVisual3D()
     UpdateMonsterVisuals3D(timeStep)

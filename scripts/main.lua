@@ -28,6 +28,12 @@ function HandleMouseMove(eventType, eventData)
 end
 
 ---@param eventType string
+---@param eventData MouseWheelEventData
+function HandleMouseWheel(eventType, eventData)
+    Game.HandleMouseWheel(eventType, eventData)
+end
+
+---@param eventType string
 ---@param eventData TouchBeginEventData
 function HandleTouchBegin(eventType, eventData)
     Game.HandleTouchBegin(eventType, eventData)

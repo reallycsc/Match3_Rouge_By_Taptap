@@ -6,15 +6,21 @@ function CreateTurnBanner(text, kind, onComplete)
     return {
         text = text,
         kind = kind or "player",
-        life = 1.28,
-        maxLife = 1.28,
+        life = 0.5,
+        maxLife = 0.5,
         onComplete = onComplete,
     }
+end
+
+function ApplyTurnBannerState(text, kind)
+    currentTurnText_ = text or "玩家回合"
+    currentTurnKind_ = kind or "player"
 end
 
 function StartNextTurnBanner()
     if #turnBannerQueue_ > 0 then
         local nextBanner = table.remove(turnBannerQueue_, 1)
+        ApplyTurnBannerState(nextBanner.text, nextBanner.kind)
         turnBanner_ = CreateTurnBanner(nextBanner.text, nextBanner.kind, nextBanner.onComplete)
         return true
     end
@@ -23,15 +29,11 @@ end
 
 function ShowTurnBanner(text, kind, onComplete)
     local bannerKind = kind or "player"
-    if turnBanner_ ~= nil then
-        local lastQueued = turnBannerQueue_[#turnBannerQueue_]
-        if onComplete == nil and ((turnBanner_.text == text and turnBanner_.kind == bannerKind) or (lastQueued ~= nil and lastQueued.text == text and lastQueued.kind == bannerKind)) then
-            return
-        end
-        table.insert(turnBannerQueue_, { text = text, kind = bannerKind, onComplete = onComplete })
-        return
+    ApplyTurnBannerState(text, bannerKind)
+    turnBanner_ = CreateTurnBanner(text, bannerKind, nil)
+    if onComplete ~= nil then
+        onComplete()
     end
-    turnBanner_ = CreateTurnBanner(text, bannerKind, onComplete)
 end
 
 function CompleteTurnBanner(banner)
@@ -80,6 +82,7 @@ function StartMonsterTurnAfterItemAnimations()
             duration = 0.05,
         }
     else
+        ResolveItemAnimationFinished()
         FinishItemTurnAndStartMonsterTurn()
     end
 end
@@ -93,7 +96,6 @@ function StartMonsterTurnAfterBanner()
 end
 
 function BeginMonsterTurnAfterBanner()
-    waitingMonsterTurnBanner_ = true
     ShowTurnBanner("怪物回合", "monster", StartMonsterTurnAfterBanner)
 end
 
@@ -123,9 +125,10 @@ function RunItemTurn()
 end
 
 function BeginPlayerTurn()
-    if isAnimating_ or currentAnim_ ~= nil then return end
+    if currentAnim_ ~= nil or ActiveRuneDropCount() > 0 then return end
     ShowTurnBanner("玩家回合", "player")
     EnsureBoardHasMove()
+    StartPlayerTurnTimer()
 end
 
 function StartWaitMonsterMovesThenResolve()
@@ -145,7 +148,6 @@ function FinishPlayerMove()
     isAnimating_ = false
     currentAnim_ = nil
     pendingMove_ = false
-    moves_ = moves_ + 1
     RunItemTurn()
     StartMonsterTurnAfterItemAnimations()
 end
@@ -157,6 +159,8 @@ function FinishPhaseChain(phase)
         FinishItemTurnAndStartMonsterTurn()
     elseif phase == "monster" then
         StartWaitMonsterMovesThenResolve()
+    elseif phase == "player" then
+        pendingMove_ = false
     else
         FinishPlayerMove()
     end
@@ -176,7 +180,19 @@ function FinishEnemyBoardDrop(anim)
     end
 end
 
-function StartClearAnimation(matches, combo, specials, preferredCells, phase)
+function ResetPlayerTurnTimerOnMatch(phase)
+    if phase == "player" and gameState_ == "playing" then
+        playerTurnActive_ = true
+        playerTurnTimer_ = CONFIG.playerTurnDuration or 2.0
+    end
+end
+
+function StartClearAnimation(matches, combo, specials, preferredCells, phase, manualClearCount)
+    local clearPhase = phase or "player"
+    selected_ = nil
+    dragStart_ = nil
+    dragTriggered_ = false
+    ResetPlayerTurnTimerOnMatch(clearPhase)
     isAnimating_ = true
     currentAnim_ = {
         kind = "clear",
@@ -186,8 +202,14 @@ function StartClearAnimation(matches, combo, specials, preferredCells, phase)
         specials = specials or {},
         combo = combo,
         preferredCells = preferredCells,
-        phase = phase or "player",
+        phase = clearPhase,
+        manualClearCount = manualClearCount or (clearPhase == "player" and playerTurnManualClearCount_ or 0),
     }
+end
+
+function StartManualPlayerClearAnimation(matches, specials, preferredCells)
+    playerTurnManualClearCount_ = (playerTurnManualClearCount_ or 0) + 1
+    StartClearAnimation(matches, 1, specials, preferredCells, "player", playerTurnManualClearCount_)
 end
 
 StartAutoClearAnimation = function(matches, combo, specials, preferredCells, phase)
@@ -292,7 +314,8 @@ function UpdateAnimation(timeStep)
         local matches, specials = FindMatches()
         if #matches > 0 then
             selected_ = nil
-            StartClearAnimation(matches, 1, specials, { anim.a, anim.b }, "player")
+            moves_ = moves_ + 1
+            StartManualPlayerClearAnimation(matches, specials, { anim.a, anim.b })
         else
             StartSwapBackAnimation(anim)
         end
@@ -301,9 +324,9 @@ function UpdateAnimation(timeStep)
         currentAnim_ = nil
         if SwapBoardObjects(anim.a, anim.b) then
             local triggerTrap = nil
-            if anim.objA.kind == "trap" and IsTriggerTrapKind(anim.objA.ref.kind) then
+            if anim.objA.kind == "trap" and IsManualTriggerTrapKind(anim.objA.ref.kind) then
                 triggerTrap = anim.objA.ref
-            elseif anim.objB.kind == "trap" and IsTriggerTrapKind(anim.objB.ref.kind) then
+            elseif anim.objB.kind == "trap" and IsManualTriggerTrapKind(anim.objB.ref.kind) then
                 triggerTrap = anim.objB.ref
             end
             if triggerTrap ~= nil then
@@ -311,17 +334,24 @@ function UpdateAnimation(timeStep)
             end
         end
     elseif anim.kind == "clear" then
-        ApplyMatchDamage(anim.matches, anim.combo, anim.specials, anim.preferredCells)
+        ApplyMatchDamage(anim.matches, anim.combo, anim.specials, anim.preferredCells, anim.manualClearCount)
         for _, cell in ipairs(anim.matches) do
             board_[cell.row][cell.col] = 0
         end
         local drops = DropAndRefillBoard()
         local heroMoved = dropHeroMoved_
-        StartDropAnimation(drops, anim.combo, anim.phase, heroMoved)
+        if anim.phase == "player" then
+            AddActiveRuneDrops(drops)
+            isAnimating_ = false
+            currentAnim_ = nil
+            pendingMove_ = false
+        else
+            StartDropAnimation(drops, anim.combo, anim.phase, heroMoved)
+        end
     elseif anim.kind == "drop" then
         local matches, specials = FindMatches()
         if #matches > 0 and anim.combo < MAX_CASCADE_COMBO then
-            StartClearAnimation(matches, anim.combo + 1, specials, nil, anim.phase)
+            StartClearAnimation(matches, anim.combo + 1, specials, nil, anim.phase, anim.manualClearCount)
         else
             FinishPhaseChain(anim.phase)
         end
@@ -334,8 +364,16 @@ function UpdateAnimation(timeStep)
         end
         isAnimating_ = false
         currentAnim_ = nil
+        ResolveItemAnimationFinished()
         if pendingMonsterTurn_ then
             FinishItemTurnAndStartMonsterTurn()
+        elseif anim.phase == "monster" then
+            if pendingItemBoardRefill_ then
+                pendingItemBoardRefill_ = false
+                StartTrapRefillDrop(0, "monster")
+            else
+                StartWaitMonsterMovesThenResolve()
+            end
         end
     elseif anim.kind == "waitMonsterMoves" then
         if #monsterMoves_ > 0 then
@@ -351,7 +389,12 @@ function UpdateAnimation(timeStep)
 end
 
 function TrySwap(a, b)
-    if gameState_ ~= "playing" or isAnimating_ or waitingMonsterTurnBanner_ then return end
+    if gameState_ ~= "playing" or waitingMonsterTurnBanner_ or not playerTurnActive_ or HasBlockingPlayerAnimation() then return end
+    if not IsStableSwapCell(a.row, a.col) or not IsStableSwapCell(b.row, b.col) then
+        selected_ = nil
+        SetMessage("下落中的符文暂时不能交换", 1.0)
+        return
+    end
     hintCells_ = {}
     hintScore_ = 0
     if not IsAdjacent(a, b) then
@@ -372,9 +415,9 @@ function TrySwap(a, b)
             selected_ = nil
             lastTapCell_ = nil
             local triggerTrap = nil
-            if objA.kind == "trap" and IsTriggerTrapKind(objA.ref.kind) then
+            if objA.kind == "trap" and IsManualTriggerTrapKind(objA.ref.kind) then
                 triggerTrap = objA.ref
-            elseif objB.kind == "trap" and IsTriggerTrapKind(objB.ref.kind) then
+            elseif objB.kind == "trap" and IsManualTriggerTrapKind(objB.ref.kind) then
                 triggerTrap = objB.ref
             end
             if triggerTrap ~= nil then
@@ -384,9 +427,10 @@ function TrySwap(a, b)
                 pendingMove_ = true
                 local matches, specials = FindMatches()
                 if #matches > 0 then
-                    StartClearAnimation(matches, 1, specials, { a, b }, "player")
+                    moves_ = moves_ + 1
+                    StartManualPlayerClearAnimation(matches, specials, { a, b })
                 else
-                    FinishPlayerMove()
+                    pendingMove_ = false
                 end
             end
         else
@@ -448,6 +492,12 @@ function UpdateEffects(timeStep)
     end
 
     for _, monster in ipairs(monsters_) do
+        if monster.hitFlash ~= nil and monster.hitFlash > 0 then
+            monster.hitFlash = math.max(0, monster.hitFlash - timeStep)
+        end
+        if monster.hitPulse ~= nil and monster.hitPulse > 0 then
+            monster.hitPulse = math.max(0, monster.hitPulse - timeStep)
+        end
         if monster.hpBuffer == nil then
             monster.hpBuffer = monster.hp
         elseif monster.hpBuffer > monster.hp then
@@ -460,7 +510,9 @@ function UpdateEffects(timeStep)
     for i = #floatTexts_, 1, -1 do
         local item = floatTexts_[i]
         item.life = item.life - timeStep
-        item.y = item.y + item.vy * timeStep
+        item.x = item.x + (item.vx or 0) * timeStep
+        item.y = item.y + (item.vy or 0) * timeStep
+        item.vy = (item.vy or 0) + (item.gravity or 0) * timeStep
         if item.life <= 0 then
             table.remove(floatTexts_, i)
         end
@@ -471,7 +523,7 @@ function UpdateEffects(timeStep)
         item.life = item.life - timeStep
         item.x = item.x + item.vx * timeStep
         item.y = item.y + item.vy * timeStep
-        item.vy = item.vy + 120 * timeStep
+        item.vy = item.vy + (item.gravity or 120) * timeStep
         if item.life <= 0 then
             table.remove(particles_, i)
         end
@@ -506,6 +558,7 @@ function UpdateEffects(timeStep)
     for i = #laserBeams_, 1, -1 do
         local item = laserBeams_[i]
         item.life = item.life - timeStep
+        ResolveLaserBeamHits(item)
         if item.life <= 0 then
             table.remove(laserBeams_, i)
         end
@@ -514,6 +567,7 @@ function UpdateEffects(timeStep)
     for i = #bombExplosions_, 1, -1 do
         local item = bombExplosions_[i]
         item.life = item.life - timeStep
+        ResolveBombExplosionHits(item)
         if item.life <= 0 then
             table.remove(bombExplosions_, i)
         end
@@ -608,6 +662,35 @@ function UpdatePanelAnimations(timeStep)
     end
 end
 
+function UpdateActiveRuneDrops(timeStep)
+    for i = #activeRuneDrops_, 1, -1 do
+        local drop = activeRuneDrops_[i]
+        drop.life = drop.life - timeStep
+        if drop.life <= 0 then
+            table.remove(activeRuneDrops_, i)
+        end
+    end
+end
+
+function UpdatePlayerTurnTimer(timeStep)
+    if gameState_ == "playing" and currentTurnKind_ == "player" and currentAnim_ == nil and ActiveRuneDropCount() == 0 then
+        EnsureBoardStable(1, "player")
+    end
+
+    if playerTurnActive_ then
+        playerTurnTimer_ = math.max(0, playerTurnTimer_ - timeStep)
+        if playerTurnTimer_ <= 0 then
+            playerTurnActive_ = false
+            selected_ = nil
+            dragStart_ = nil
+            dragTriggered_ = false
+            SetMessage("玩家回合结束，等待棋盘稳定", 1.2)
+        end
+    elseif currentTurnKind_ == "player" and gameState_ == "playing" and not pendingPlayerTurnTimerAfterRender_ and not startGamePromptVisible_ then
+        EndPlayerTurnWhenStable()
+    end
+end
+
 ---@param eventType string
 ---@param eventData UpdateEventData
 function HandleUpdate(eventType, eventData)
@@ -617,14 +700,16 @@ function HandleUpdate(eventType, eventData)
     UpdateEffects(timeStep)
     UpdatePanelAnimations(timeStep)
     UpdateTurnBanner(timeStep)
+    UpdateActiveRuneDrops(timeStep)
     UpdateAnimation(timeStep)
+    UpdatePlayerTurnTimer(timeStep)
     TryOpenPendingRogueReward()
     UpdateScene3D(timeStep)
 end
 
 function HandleCellPressed(cell)
-    if waitingMonsterTurnBanner_ then return end
-    if cell == nil then return end
+    if waitingMonsterTurnBanner_ or not playerTurnActive_ then return end
+    if cell == nil or not IsStableSwapCell(cell.row, cell.col) then return end
     dragStart_ = cell
     dragTriggered_ = false
 end
@@ -641,13 +726,22 @@ function RememberTapCell(cell)
 end
 
 function HandleCellReleased(cell)
-    if waitingMonsterTurnBanner_ then return end
+    if waitingMonsterTurnBanner_ or not playerTurnActive_ then
+        dragStart_ = nil
+        dragTriggered_ = false
+        return
+    end
     if dragTriggered_ then
         dragStart_ = nil
         dragTriggered_ = false
         return
     end
     if cell == nil then
+        dragStart_ = nil
+        return
+    end
+    if not IsStableSwapCell(cell.row, cell.col) then
+        selected_ = nil
         dragStart_ = nil
         return
     end
@@ -672,7 +766,7 @@ end
 function HandleCellDragged(cell)
     if waitingMonsterTurnBanner_ then return end
     if dragStart_ == nil or dragTriggered_ or cell == nil then return end
-    if isAnimating_ or gameState_ ~= "playing" then return end
+    if gameState_ ~= "playing" or not playerTurnActive_ or HasBlockingPlayerAnimation() then return end
     if cell.row == dragStart_.row and cell.col == dragStart_.col then return end
     if IsAdjacent(dragStart_, cell) then
         dragTriggered_ = true
@@ -693,7 +787,7 @@ function HandleMouseButtonDown(eventType, eventData)
     if button ~= MOUSEB_LEFT then return end
 
     if HandleUiPress(eventData["X"]:GetInt(), eventData["Y"]:GetInt()) then return end
-    if isAnimating_ then return end
+    if HasBlockingPlayerAnimation() or not playerTurnActive_ then return end
 
     HandleCellPressed(ScreenToCell(eventData["X"]:GetInt(), eventData["Y"]:GetInt()))
 end
@@ -708,7 +802,7 @@ function HandleMouseButtonUp(eventType, eventData)
         uiPressConsumed_ = false
         return
     end
-    if isAnimating_ then return end
+    if HasBlockingPlayerAnimation() then return end
     if uiPressConsumed_ then
         uiPressConsumed_ = false
         dragStart_ = nil
@@ -727,6 +821,12 @@ function HandleMouseMove(eventType, eventData)
 end
 
 ---@param eventType string
+---@param eventData MouseWheelEventData
+function HandleMouseWheel(eventType, eventData)
+    AdjustCameraZoom3D(eventData["Wheel"]:GetInt())
+end
+
+---@param eventType string
 ---@param eventData TouchBeginEventData
 function HandleTouchBegin(eventType, eventData)
     if gameState_ == "gameover" then
@@ -735,7 +835,7 @@ function HandleTouchBegin(eventType, eventData)
     end
 
     if HandleUiPress(eventData["X"]:GetInt(), eventData["Y"]:GetInt()) then return end
-    if isAnimating_ then return end
+    if HasBlockingPlayerAnimation() or not playerTurnActive_ then return end
 
     HandleCellPressed(ScreenToCell(eventData["X"]:GetInt(), eventData["Y"]:GetInt()))
 end

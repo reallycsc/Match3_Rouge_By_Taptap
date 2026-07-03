@@ -12,6 +12,10 @@ scene3D_ = nil
 cameraNode3D_ = nil
 ---@type Camera
 camera3D_ = nil
+cameraZoom3D_ = 1.0
+cameraZoomTarget3D_ = 1.0
+meowClearSound_ = nil
+meowSoundSource_ = nil
 ---@type Node
 boardRoot3D_ = nil
 ---@type Node
@@ -97,6 +101,15 @@ hintScore_ = 0
 shuffleCount_ = 0
 turnId_ = 0
 pendingRogueReward_ = false
+playerTurnActive_ = false
+playerTurnTimer_ = 0
+playerTurnManualClearCount_ = 0
+pendingPlayerTurnTimerAfterRender_ = false
+startGamePromptVisible_ = false
+startGameButtonRect_ = nil
+activeRuneDrops_ = {}
+currentTurnText_ = "玩家回合"
+currentTurnKind_ = "player"
 turnBanner_ = nil
 turnBannerQueue_ = {}
 roguelike_ = nil

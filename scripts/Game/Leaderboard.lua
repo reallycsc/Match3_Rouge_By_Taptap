@@ -20,6 +20,7 @@ function InitTapTapServices()
     LoadCurrentUserNickname()
     RefreshLeaderboard()
     RefreshMyRank()
+    LoadNumberConfigFromCloud()
 end
 
 function LoadCurrentUserNickname()

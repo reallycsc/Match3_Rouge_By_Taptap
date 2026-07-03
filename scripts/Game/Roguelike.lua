@@ -316,6 +316,7 @@ function StartNextWaveAfterReward()
     SetMessage("新的恶魔潮涌入棋盘。主角恢复 " .. tostring(heal) .. " 点生命", 2.5)
     AddOperationLog("进入第 " .. tostring(wave_) .. " 波，恢复 " .. tostring(heal) .. " 点生命")
     ShowTurnBanner("玩家回合", "player")
+    StartPlayerTurnTimer()
     print("Next wave after reward: " .. tostring(wave_) .. ", monsters=" .. tostring(#monsters_))
 end
 

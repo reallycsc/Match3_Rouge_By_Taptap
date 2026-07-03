@@ -1,12 +1,15 @@
 local G = require "Game.Context"
 local _ENV = G
 
+local NUMBER_CONFIG_CLOUD_KEY = "rune_survivor_number_config"
+
 local NUMBER_CONFIG_FIELDS = {
     { key = "boardSize", label = "棋盘尺寸", min = 5, max = 11, step = 1 },
     { key = "gemTypes", label = "符文种类", min = 3, max = 5, step = 1 },
     { key = "heroMaxHp", label = "玩家生命", min = 5, max = 99, step = 1 },
     { key = "baseMonsterHp", label = "怪物基础生命", min = 1, max = 50, step = 1 },
     { key = "monsterCount", label = "初始怪物数", min = 1, max = 12, step = 1 },
+    { key = "monsterCountIncreasePerWave", label = "每波怪物增加", min = 0, max = 5, step = 0.25 },
     { key = "monsterMaxCount", label = "怪物数量上限", min = 1, max = 20, step = 1 },
     { key = "monsterWaveHpBonus", label = "每波生命加成", min = 0, max = 20, step = 1 },
     { key = "monsterAttackBase", label = "怪物攻击", min = 0, max = 20, step = 1 },
@@ -18,6 +21,7 @@ local NUMBER_CONFIG_FIELDS = {
     { key = "killScorePerWave", label = "每波击杀分数加成", min = 0, max = 999, step = 5 },
     { key = "heroHealPerWave", label = "每波治疗", min = 0, max = 50, step = 1 },
     { key = "maxCascadeCombo", label = "最大连锁", min = 1, max = 20, step = 1 },
+    { key = "playerTurnDuration", label = "玩家回合秒", min = 0.5, max = 10, step = 0.1 },
     { key = "swapDuration", label = "交换动画秒", min = 0.05, max = 1.0, step = 0.01 },
     { key = "clearDuration", label = "消除动画秒", min = 0.05, max = 1.0, step = 0.01 },
     { key = "dropDuration", label = "下落动画秒", min = 0.05, max = 1.0, step = 0.01 },
@@ -30,6 +34,33 @@ local NUMBER_CONFIG_FIELDS = {
     { key = "missileSiloTurns", label = "导弹井回合", min = 1, max = 20, step = 1 },
     { key = "missilesPerSiloTurn", label = "每回合导弹数", min = 1, max = 5, step = 1 },
 }
+
+function BuildNumberConfigData()
+    local data = {}
+    for _, field in ipairs(NUMBER_CONFIG_FIELDS) do
+        data[field.key] = CONFIG[field.key]
+    end
+    return data
+end
+
+function ApplyNumberConfigData(data)
+    if type(data) ~= "table" then return false end
+    local changed = false
+    for _, field in ipairs(NUMBER_CONFIG_FIELDS) do
+        local value = data[field.key]
+        if type(value) == "number" then
+            CONFIG[field.key] = Clamp(value, field.min, field.max)
+            if (field.step or 1) >= 1 then
+                CONFIG[field.key] = math.floor(CONFIG[field.key] + 0.5)
+            end
+            changed = true
+        end
+    end
+    if changed then
+        ApplyConfigGlobals()
+    end
+    return changed
+end
 
 function OpenNumberConfig()
     numberConfig_.visible = true
@@ -55,11 +86,20 @@ function AdjustNumberConfigField(index, direction)
     numberConfig_.draft[field.key] = value
 end
 
+function SaveNumberConfigToCloud(data)
+    if clientCloud == nil then return end
+    clientCloud:Set(NUMBER_CONFIG_CLOUD_KEY, data, {
+        ok = function()
+            print("Saved number config to cloud")
+        end,
+        error = function(code, reason)
+            print("Save number config to cloud failed: " .. tostring(reason))
+        end,
+    })
+end
+
 function SaveNumberConfig()
-    local data = {}
-    for _, field in ipairs(NUMBER_CONFIG_FIELDS) do
-        data[field.key] = CONFIG[field.key]
-    end
+    local data = BuildNumberConfigData()
     local file = File("number_config.json", FILE_WRITE)
     if file ~= nil and file:IsOpen() then
         file:WriteString(cjson.encode(data))
@@ -68,6 +108,7 @@ function SaveNumberConfig()
     else
         print("Failed to save number_config.json")
     end
+    SaveNumberConfigToCloud(data)
 end
 
 function ApplyNumberConfig()
@@ -167,33 +208,51 @@ function EaseOutBack(t)
     return 1 + c3 * (t - 1) * (t - 1) * (t - 1) + c1 * (t - 1) * (t - 1)
 end
 
-function AddFloatText(row, col, text, color)
+function AddFloatText(row, col, text, color, options)
     local x, y = CellCenter(row, col)
+    local opts = options or {}
+    local angle = opts.angle or -math.pi * 0.5
+    local speed = opts.speed or 38
     table.insert(floatTexts_, {
-        x = x,
-        y = y - tile_ * 0.2,
+        x = x + (opts.offsetX or 0),
+        y = y - tile_ * 0.2 + (opts.offsetY or 0),
+        startX = x + (opts.offsetX or 0),
+        startY = y - tile_ * 0.2 + (opts.offsetY or 0),
         text = text,
         color = color,
-        life = 1.0,
-        maxLife = 1.0,
-        vy = -38,
+        life = opts.life or 1.0,
+        maxLife = opts.life or 1.0,
+        vx = math.cos(angle) * speed,
+        vy = math.sin(angle) * speed,
+        gravity = opts.gravity or 0,
+        size = opts.size or 20,
+        pop = opts.pop == true,
     })
 end
 
-function AddParticles(row, col, color, count)
+function AddParticles(row, col, color, count, options)
+    local opts = options or {}
     local x, y = CellCenter(row, col)
+    if opts.fromRuneCenter == true and BoardHudPoint3D ~= nil then
+        local p = BoardHudPoint3D(row, col, GetRuneDiameter3D ~= nil and GetRuneDiameter3D() * 0.5 or 0.5)
+        if p ~= nil then
+            x = p.x
+            y = p.y
+        end
+    end
     for i = 1, count do
         local angle = math.random() * math.pi * 2
-        local speed = 35 + math.random() * 95
+        local speed = (opts.minSpeed or 45) + math.random() * (opts.speedRange or 85)
         table.insert(particles_, {
             x = x,
             y = y,
             vx = math.cos(angle) * speed,
             vy = math.sin(angle) * speed,
-            life = 0.42 + math.random() * 0.35,
-            maxLife = 0.8,
-            size = 2 + math.random() * 3,
+            life = opts.life or (0.46 + math.random() * 0.28),
+            maxLife = opts.maxLife or 0.74,
+            size = (opts.minSize or 2) + math.random() * (opts.sizeRange or 3),
             color = color,
+            gravity = opts.gravity or 0,
         })
     end
 end
@@ -280,6 +339,12 @@ function HandleUiPress(inputX, inputY)
     local y = inputY / dpr_
     uiPressConsumed_ = false
 
+    if startGamePromptVisible_ and PointInRect(x, y, startGameButtonRect_) then
+        StartGameFromPrompt()
+        uiPressConsumed_ = true
+        return true
+    end
+
     if numberConfig_.visible then
         if PointInRect(x, y, numberConfig_.closeRect) then
             CloseNumberConfig()
@@ -357,6 +422,24 @@ function HandleUiPress(inputX, inputY)
     end
 
     return false
+end
+
+function LoadNumberConfigFromCloud()
+    if clientCloud == nil then return end
+    clientCloud:Get(NUMBER_CONFIG_CLOUD_KEY, {
+        ok = function(values)
+            local data = values and values[NUMBER_CONFIG_CLOUD_KEY]
+            if type(data) == "table" and ApplyNumberConfigData(data) then
+                RecalcLayout()
+                ResetGame()
+                SetMessage("已加载已保存的数值配置", 2.2)
+                print("Loaded number config from cloud")
+            end
+        end,
+        error = function(code, reason)
+            print("Load number config from cloud failed: " .. tostring(reason))
+        end,
+    })
 end
 
 function AddOperationLog(text)

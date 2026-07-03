@@ -74,80 +74,71 @@ function DrawGemSlot(ctx, x, y, alpha)
     nvgStroke(ctx)
 end
 
-function DrawGemSymbol(ctx, row, col, gemType, overrideX, overrideY, alphaMul, scaleMul)
+function DrawGemSymbol(ctx, row, col, gemType, overrideX, overrideY, alphaMul, scaleMul, yScaleMul)
     local x = overrideX or (boardX_ + (col - 1) * (tile_ + gap_))
     local y = overrideY or (boardY_ + (row - 1) * (tile_ + gap_))
     local alpha = alphaMul or 1.0
     local scale = scaleMul or 1.0
+    local yScale = yScaleMul or scale
     local color = GEM_COLORS[gemType]
     local cx = x + tile_ * 0.5
     local cy = y + tile_ * 0.5
-    local r = tile_ * 0.32 * scale
+    local r = tile_ * 0.46
 
-    local glow = nvgRadialGradient(ctx, cx, cy, r * 0.15, r * 1.3,
-        nvgRGBA(color[1], color[2], color[3], math.floor(165 * alpha)), nvgRGBA(color[1], color[2], color[3], 0))
+    local glow = nvgRadialGradient(ctx, cx, cy, r * 0.12, r * 1.35 * math.max(scale, yScale),
+        nvgRGBA(color[1], color[2], color[3], math.floor(135 * alpha)), nvgRGBA(color[1], color[2], color[3], 0))
     nvgBeginPath(ctx)
-    nvgCircle(ctx, cx, cy, r * 1.35)
+    nvgEllipse(ctx, cx, cy, r * 1.35 * scale, r * 1.35 * yScale)
+    nvgFillPaint(ctx, glow)
+    nvgFill(ctx)
+
+    local ballPaint = nvgRadialGradient(ctx, cx - r * 0.32 * scale, cy - r * 0.36 * yScale, r * 0.08, r * 1.05 * math.max(scale, yScale),
+        nvgRGBA(255, 255, 255, math.floor(150 * alpha)), nvgRGBA(color[1], color[2], color[3], math.floor(255 * alpha)))
+    nvgBeginPath(ctx)
+    nvgEllipse(ctx, cx, cy, r * scale, r * yScale)
+    nvgFillPaint(ctx, ballPaint)
+    nvgFill(ctx)
+    nvgStrokeColor(ctx, nvgRGBA(255, 230, 190, math.floor(150 * alpha)))
+    nvgStrokeWidth(ctx, 1.6)
+    nvgStroke(ctx)
+
+    nvgBeginPath(ctx)
+    nvgEllipse(ctx, cx - r * 0.28 * scale, cy - r * 0.32 * yScale, r * 0.16 * scale, r * 0.16 * yScale)
+    nvgFillColor(ctx, nvgRGBA(255, 255, 255, math.floor(125 * alpha)))
+    nvgFill(ctx)
+end
+
+function DrawGem(ctx, row, col, gemType, overrideX, overrideY, alphaMul, scaleMul, yScaleMul)
+    local x = overrideX or (boardX_ + (col - 1) * (tile_ + gap_))
+    local y = overrideY or (boardY_ + (row - 1) * (tile_ + gap_))
+    DrawGemSlot(ctx, x, y, alphaMul or 1.0)
+    DrawGemSymbol(ctx, row, col, gemType, x, y, alphaMul, scaleMul, yScaleMul)
+end
+
+function IsSelectedCell(row, col)
+    if selected_ ~= nil and selected_.row == row and selected_.col == col then return true end
+    if dragStart_ ~= nil and dragStart_.row == row and dragStart_.col == col then return true end
+    return false
+end
+
+function DrawSelection(ctx)
+    local cell = selected_ or dragStart_
+    if cell == nil then return end
+    local cx, cy = CellCenter(cell.row, cell.col)
+    local pulse = 0.5 + 0.5 * math.sin(time_ * 10)
+    local r = tile_ * (0.52 + pulse * 0.04)
+
+    local glow = nvgRadialGradient(ctx, cx, cy, r * 0.25, r * 1.75,
+        nvgRGBA(255, 235, 116, 120 + math.floor(pulse * 70)), nvgRGBA(255, 204, 48, 0))
+    nvgBeginPath(ctx)
+    nvgCircle(ctx, cx, cy, r * 1.65)
     nvgFillPaint(ctx, glow)
     nvgFill(ctx)
 
     nvgBeginPath(ctx)
-    if gemType == 1 then
-        nvgMoveTo(ctx, cx, cy - r)
-        nvgLineTo(ctx, cx + r * 0.82, cy)
-        nvgLineTo(ctx, cx, cy + r)
-        nvgLineTo(ctx, cx - r * 0.82, cy)
-        nvgClosePath(ctx)
-    elseif gemType == 2 then
-        nvgCircle(ctx, cx, cy, r * 0.86)
-    elseif gemType == 3 then
-        nvgMoveTo(ctx, cx, cy - r)
-        nvgLineTo(ctx, cx + r, cy + r * 0.75)
-        nvgLineTo(ctx, cx - r, cy + r * 0.75)
-        nvgClosePath(ctx)
-    elseif gemType == 4 then
-        nvgMoveTo(ctx, cx, cy - r)
-        nvgLineTo(ctx, cx + r, cy - r * 0.1)
-        nvgLineTo(ctx, cx + r * 0.46, cy + r)
-        nvgLineTo(ctx, cx - r * 0.46, cy + r)
-        nvgLineTo(ctx, cx - r, cy - r * 0.1)
-        nvgClosePath(ctx)
-    else
-        for i = 1, 5 do
-            local angle = -math.pi * 0.5 + (i - 1) * math.pi * 2 / 5
-            local px = cx + math.cos(angle) * r
-            local py = cy + math.sin(angle) * r
-            if i == 1 then nvgMoveTo(ctx, px, py) else nvgLineTo(ctx, px, py) end
-        end
-        nvgClosePath(ctx)
-    end
-
-    local gemPaint = nvgLinearGradient(ctx, cx - r, cy - r, cx + r, cy + r,
-        nvgRGBA(255, 255, 255, math.floor(95 * alpha)), nvgRGBA(color[1], color[2], color[3], math.floor(255 * alpha)))
-    nvgFillPaint(ctx, gemPaint)
-    nvgFill(ctx)
-    nvgStrokeColor(ctx, nvgRGBA(255, 230, 190, math.floor(160 * alpha)))
-    nvgStrokeWidth(ctx, 1.5)
-    nvgStroke(ctx)
-
-end
-
-function DrawGem(ctx, row, col, gemType, overrideX, overrideY, alphaMul, scaleMul)
-    local x = overrideX or (boardX_ + (col - 1) * (tile_ + gap_))
-    local y = overrideY or (boardY_ + (row - 1) * (tile_ + gap_))
-    DrawGemSlot(ctx, x, y, alphaMul or 1.0)
-    DrawGemSymbol(ctx, row, col, gemType, x, y, alphaMul, scaleMul)
-end
-
-function DrawSelection(ctx)
-    if selected_ == nil then return end
-    local x = boardX_ + (selected_.col - 1) * (tile_ + gap_)
-    local y = boardY_ + (selected_.row - 1) * (tile_ + gap_)
-    local pulse = 0.5 + 0.5 * math.sin(time_ * 8)
-    nvgBeginPath(ctx)
-    nvgRoundedRect(ctx, x - 3, y - 3, tile_ + 6, tile_ + 6, 11)
-    nvgStrokeColor(ctx, nvgRGBA(255, 214, 80, math.floor(160 + pulse * 90)))
-    nvgStrokeWidth(ctx, 3)
+    nvgCircle(ctx, cx, cy, r)
+    nvgStrokeColor(ctx, nvgRGBA(255, 246, 132, 220 + math.floor(pulse * 35)))
+    nvgStrokeWidth(ctx, 3.0 + pulse * 1.4)
     nvgStroke(ctx)
 end
 
@@ -184,14 +175,28 @@ function DrawHero(ctx)
 end
 
 function DrawMonsterAt(ctx, monster, cx, cy)
-    local r = tile_ * 0.32
+    local hitT = Clamp((monster.hitFlash or 0) / 0.32, 0, 1)
+    local pulseT = Clamp((monster.hitPulse or 0) / 0.26, 0, 1)
+    local shakeX = math.sin(time_ * 90 + monster.pulse) * hitT * 5
+    local shakeY = math.cos(time_ * 76 + monster.pulse) * hitT * 3
+    cx = cx + shakeX
+    cy = cy + shakeY
+    local r = tile_ * 0.32 * (1.0 + math.sin((1 - pulseT) * math.pi) * 0.18)
     local hurt = 1.0 - Clamp(monster.hp / monster.maxHp, 0, 1)
     local pulse = 0.5 + 0.5 * math.sin(time_ * 6 + monster.pulse)
 
     nvgBeginPath(ctx)
-    nvgCircle(ctx, cx, cy, r * (1.24 + pulse * 0.08))
-    nvgFillColor(ctx, nvgRGBA(190, 22, 18, 45 + math.floor(hurt * 70)))
+    nvgCircle(ctx, cx, cy, r * (1.24 + pulse * 0.08 + hitT * 0.45))
+    nvgFillColor(ctx, nvgRGBA(255, 62, 36, 45 + math.floor(hurt * 70) + math.floor(hitT * 96)))
     nvgFill(ctx)
+
+    if hitT > 0 then
+        nvgBeginPath(ctx)
+        nvgCircle(ctx, cx, cy, r * (1.08 + (1 - hitT) * 0.46))
+        nvgStrokeColor(ctx, nvgRGBA(255, 230, 150, math.floor(230 * hitT)))
+        nvgStrokeWidth(ctx, 3.0 * hitT)
+        nvgStroke(ctx)
+    end
 
     nvgBeginPath(ctx)
     nvgMoveTo(ctx, cx - r * 0.9, cy - r * 0.2)
@@ -226,6 +231,7 @@ function DrawMonster(ctx, monster)
 end
 
 function IsCellHiddenByAnimation(row, col)
+    if IsRuneDropCell(row, col) then return true end
     for _, move in ipairs(monsterMoves_) do
         if row == move.fromRow and col == move.fromCol then return true end
         if row == move.toRow and col == move.toCol then return true end
@@ -280,10 +286,14 @@ function DrawAnimatedGems(ctx)
             DrawTrapIconAt(ctx, anim.objB.ref.kind, Lerp(bx, ax, eased), Lerp(by, ay, eased), 1.06, 1.0)
         end
     elseif anim.kind == "clear" then
-        local pulse = math.sin(t * math.pi)
+        local squash = math.sin(Clamp(t / 0.42, 0, 1) * math.pi)
+        local settle = math.sin(Clamp((t - 0.18) / 0.62, 0, 1) * math.pi)
+        local sxz = 1.0 + squash * 0.16 + settle * 0.08
+        local sy = 1.0 - squash * 0.18 + settle * 0.12
+        local lift = math.sin(t * math.pi) * 0.16 * tile_
         for _, cell in ipairs(anim.matches) do
             local x, y = CellTopLeft(cell.row, cell.col)
-            DrawGem(ctx, cell.row, cell.col, cell.type, x, y, 1 - t * 0.85, 1.0 + pulse * 0.35)
+            DrawGem(ctx, cell.row, cell.col, cell.type, x, y - lift, 1 - t * 0.85, sxz, sy)
         end
     elseif anim.kind == "drop" or anim.kind == "enemyDrop" then
         local eased = EaseOutBack(t)
@@ -292,6 +302,16 @@ function DrawAnimatedGems(ctx)
             local toX, toY = CellTopLeft(drop.toRow, drop.toCol)
             DrawGem(ctx, drop.toRow, drop.toCol, drop.type, Lerp(fromX, toX, eased), Lerp(fromY, toY, eased), 1.0, 1.0)
         end
+    end
+end
+
+function DrawActiveRuneDrops(ctx)
+    for _, drop in ipairs(activeRuneDrops_ or {}) do
+        local t = 1 - Clamp((drop.life or 0) / math.max(0.001, drop.maxLife or DROP_DURATION), 0, 1)
+        local eased = EaseOutBack(t)
+        local fromX, fromY = CellTopLeft(drop.fromRow, drop.fromCol)
+        local toX, toY = CellTopLeft(drop.toRow, drop.toCol)
+        DrawGem(ctx, drop.toRow, drop.toCol, drop.type, Lerp(fromX, toX, eased), Lerp(fromY, toY, eased), 1.0, 1.0)
     end
 end
 
@@ -761,7 +781,11 @@ function DrawStaticGemSymbols(ctx)
     for row = 1, BOARD_SIZE do
         for col = 1, BOARD_SIZE do
             if board_[row][col] ~= 0 and not IsCellHiddenByAnimation(row, col) then
-                DrawGemSymbol(ctx, row, col, board_[row][col])
+                local scale = 1.0
+                if IsSelectedCell(row, col) then
+                    scale = 1.08 + math.sin(time_ * 10.0) * 0.035
+                end
+                DrawGemSymbol(ctx, row, col, board_[row][col], nil, nil, 1.0, scale)
             end
         end
     end
@@ -806,6 +830,7 @@ function DrawBoard(ctx)
     DrawStaticGemSymbols(ctx)
 
     DrawAnimatedGems(ctx)
+    DrawActiveRuneDrops(ctx)
 
     for _, trap in ipairs(traps_) do
         if not IsCellHiddenByAnimation(trap.row, trap.col) then
@@ -821,6 +846,11 @@ function DrawBoard(ctx)
 
     for _, effect in ipairs(matchEffects_) do
         local cx, cy = CellCenter(effect.row, effect.col)
+        local p = BoardHudPoint3D(effect.row, effect.col, GetRuneDiameter3D ~= nil and GetRuneDiameter3D() * 0.5 or 0.5)
+        if p ~= nil then
+            cx = p.x
+            cy = p.y
+        end
         local t = effect.life / effect.maxLife
         local color = GEM_COLORS[effect.type]
         nvgBeginPath(ctx)
@@ -853,9 +883,14 @@ function DrawEffects(ctx)
     end
 
     for _, item in ipairs(floatTexts_) do
-        local alpha = math.floor(Clamp(item.life / item.maxLife, 0, 1) * (item.color[4] or 255))
-        DrawText(ctx, item.x + 2, item.y + 2, 20, item.text, { 0, 0, 0, math.floor(alpha * 0.6) }, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-        DrawText(ctx, item.x, item.y, 20, item.text, { item.color[1], item.color[2], item.color[3], alpha }, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        local t = Clamp(item.life / item.maxLife, 0, 1)
+        local alpha = math.floor(t * (item.color[4] or 255))
+        local size = item.size or 20
+        if item.pop then
+            size = size * (1.0 + math.sin((1 - t) * math.pi) * 0.28)
+        end
+        DrawText(ctx, item.x + 2, item.y + 2, size, item.text, { 0, 0, 0, math.floor(alpha * 0.6) }, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        DrawText(ctx, item.x, item.y, size, item.text, { item.color[1], item.color[2], item.color[3], alpha }, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
     end
 end
 
@@ -1305,7 +1340,105 @@ function DrawItemAimLinesUI(ctx)
     end
 end
 
-function DrawMonsterHealthBar(ctx, monster, entry)
+function DrawMonsterMoveIcon(ctx, cx, cy, intent)
+    local pulse = 0.5 + 0.5 * math.sin(time_ * 5.5)
+    local iconX = cx - 12
+    local iconY = cy
+    nvgBeginPath(ctx)
+    nvgEllipse(ctx, iconX - 3, iconY + 1, 4.2, 6.4)
+    nvgEllipse(ctx, iconX + 4, iconY - 2, 4.0, 6.1)
+    nvgFillColor(ctx, nvgRGBA(96, 232, 255, 236))
+    nvgFill(ctx)
+    nvgStrokeColor(ctx, nvgRGBA(18, 70, 95, 230))
+    nvgStrokeWidth(ctx, 1.1)
+    nvgStroke(ctx)
+
+    local dx = intent.dc or 0
+    local dy = intent.dr or 0
+    local len = 11 + pulse * 2
+    local ax = cx + 11
+    local ay = cy
+    local tipX = ax + dx * len
+    local tipY = ay + dy * len
+    nvgBeginPath(ctx)
+    nvgMoveTo(ctx, ax - dx * 5, ay - dy * 5)
+    nvgLineTo(ctx, tipX, tipY)
+    nvgStrokeColor(ctx, nvgRGBA(255, 245, 166, 245))
+    nvgStrokeWidth(ctx, 2.4)
+    nvgStroke(ctx)
+    nvgBeginPath(ctx)
+    if dx ~= 0 then
+        nvgMoveTo(ctx, tipX, tipY)
+        nvgLineTo(ctx, tipX - dx * 6, tipY - 4)
+        nvgLineTo(ctx, tipX - dx * 6, tipY + 4)
+    else
+        nvgMoveTo(ctx, tipX, tipY)
+        nvgLineTo(ctx, tipX - 4, tipY - dy * 6)
+        nvgLineTo(ctx, tipX + 4, tipY - dy * 6)
+    end
+    nvgClosePath(ctx)
+    nvgFillColor(ctx, nvgRGBA(255, 245, 166, 245))
+    nvgFill(ctx)
+end
+
+function DrawMonsterAttackIcon(ctx, cx, cy, damage)
+    nvgSave(ctx)
+    nvgTranslate(ctx, cx - 11, cy + 1)
+    nvgRotate(ctx, -0.72)
+    nvgBeginPath(ctx)
+    nvgRoundedRect(ctx, -2, -10, 4, 17, 1.4)
+    nvgFillColor(ctx, nvgRGBA(238, 238, 248, 246))
+    nvgFill(ctx)
+    nvgStrokeColor(ctx, nvgRGBA(90, 38, 44, 230))
+    nvgStrokeWidth(ctx, 1.1)
+    nvgStroke(ctx)
+    nvgBeginPath(ctx)
+    nvgRect(ctx, -6, 6, 12, 3)
+    nvgFillColor(ctx, nvgRGBA(255, 206, 86, 245))
+    nvgFill(ctx)
+    nvgBeginPath(ctx)
+    nvgRect(ctx, -1.8, 9, 3.6, 6)
+    nvgFillColor(ctx, nvgRGBA(128, 62, 38, 245))
+    nvgFill(ctx)
+    nvgRestore(ctx)
+
+    DrawText(ctx, cx + 11, cy, 14, tostring(damage or 1), { 255, 95, 78, 255 }, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+end
+
+function DrawMonsterIntentBadge(ctx, monster, index, barX, barY, barW)
+    if waitingMonsterTurnBanner_ or pendingRogueReward_ then return end
+    local intent = PredictMonsterIntent(index, monster)
+    if intent == nil then return end
+
+    local w = intent.kind == "attack" and 48 or 54
+    local h = 25
+    local x = barX + (barW - w) * 0.5
+    local y = barY - h - 6
+    local isAttack = intent.kind == "attack"
+    local border = isAttack and { 255, 88, 70, 235 } or { 96, 232, 255, 230 }
+    local fill = isAttack and { 54, 18, 24, 224 } or { 15, 40, 58, 224 }
+    local pulse = 0.5 + 0.5 * math.sin(time_ * 6.0)
+
+    nvgBeginPath(ctx)
+    nvgRoundedRect(ctx, x - 2, y - 2, w + 4, h + 4, 9)
+    nvgFillColor(ctx, nvgRGBA(border[1], border[2], border[3], 34 + math.floor(pulse * 34)))
+    nvgFill(ctx)
+    nvgBeginPath(ctx)
+    nvgRoundedRect(ctx, x, y, w, h, 8)
+    nvgFillColor(ctx, nvgRGBA(fill[1], fill[2], fill[3], fill[4]))
+    nvgFill(ctx)
+    nvgStrokeColor(ctx, nvgRGBA(border[1], border[2], border[3], border[4]))
+    nvgStrokeWidth(ctx, 1.5)
+    nvgStroke(ctx)
+
+    if isAttack then
+        DrawMonsterAttackIcon(ctx, x + w * 0.5, y + h * 0.5, intent.damage)
+    else
+        DrawMonsterMoveIcon(ctx, x + w * 0.5, y + h * 0.5, intent)
+    end
+end
+
+function DrawMonsterHealthBar(ctx, monster, entry, index)
     if camera3D_ == nil or entry == nil or entry.node == nil then return end
     local worldPos = entry.node.worldPosition + Vector3(0, 1.05, 0)
     local screenPos = camera3D_:WorldToScreenPoint(worldPos)
@@ -1317,6 +1450,8 @@ function DrawMonsterHealthBar(ctx, monster, entry)
     local barH = 8
     local x = screenPos.x * screenW_ - barW * 0.5
     local y = screenPos.y * screenH_ - 18
+
+    DrawMonsterIntentBadge(ctx, monster, index, x, y, barW)
 
     nvgBeginPath(ctx)
     nvgRoundedRect(ctx, x - 2, y - 2, barW + 4, barH + 4, 5)
@@ -1358,8 +1493,8 @@ function DrawHeroHealthBar(ctx)
     local maxHp = math.max(1, hero_.maxHp or 1)
     local rate = Clamp(hero_.hp / maxHp, 0, 1)
     local bufferRate = Clamp((hero_.hpBuffer or hero_.hp) / maxHp, 0, 1)
-    local barW = Clamp(92 / math.max(0.65, dpr_), 64, 112)
-    local barH = 10
+    local barW = Clamp(112 / math.max(0.65, dpr_), 78, 132)
+    local barH = 14
     local x = screenPos.x * screenW_ - barW * 0.5
     local y = screenPos.y * screenH_ - 18
 
@@ -1398,12 +1533,16 @@ function DrawHeroHealthBar(ctx)
     nvgStrokeColor(ctx, nvgRGBA(180, 255, 165, 225))
     nvgStrokeWidth(ctx, 1.3)
     nvgStroke(ctx)
+
+    local hpText = tostring(math.max(0, hero_.hp)) .. "/" .. tostring(maxHp)
+    DrawText(ctx, x + barW * 0.5 + 1, y + barH * 0.5 + 1, 12, hpText, { 0, 0, 0, 210 }, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    DrawText(ctx, x + barW * 0.5, y + barH * 0.5, 12, hpText, { 255, 252, 124, 255 }, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
 end
 
 function DrawMonsterHealthBars(ctx)
     for index, monster in ipairs(monsters_) do
         if monster.hp > 0 then
-            DrawMonsterHealthBar(ctx, monster, monsterNodes3D_[index])
+            DrawMonsterHealthBar(ctx, monster, monsterNodes3D_[index], index)
         end
     end
 end
@@ -1499,51 +1638,37 @@ function DrawHudDamageParticles(ctx)
     end
 end
 
+function DrawPlayerTurnTimer(ctx, x, y, barW)
+    if currentTurnKind_ ~= "player" then return end
+    local duration = math.max(0.1, CONFIG.playerTurnDuration or 2.0)
+    local rate = Clamp((playerTurnTimer_ or 0) / duration, 0, 1)
+    local barH = 12
+    local color = rate > 0.5 and { 33, 189, 174, 245 } or (rate > 0.2 and { 255, 217, 61, 245 } or { 255, 76, 68, 245 })
+    nvgBeginPath(ctx)
+    nvgRoundedRect(ctx, x, y, barW, barH, 6)
+    nvgFillColor(ctx, nvgRGBA(8, 7, 16, 210))
+    nvgFill(ctx)
+    nvgBeginPath(ctx)
+    nvgRoundedRect(ctx, x, y, barW * rate, barH, 6)
+    nvgFillColor(ctx, nvgRGBA(color[1], color[2], color[3], color[4]))
+    nvgFill(ctx)
+    nvgStrokeColor(ctx, nvgRGBA(color[1], color[2], color[3], 150))
+    nvgStrokeWidth(ctx, 1)
+    nvgStroke(ctx)
+    DrawText(ctx, x + barW + 26, y + barH * 0.5, 11, string.format("%.1fs", playerTurnTimer_ or 0), color, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+end
+
 function DrawHud(ctx)
     local panelW = math.min(boardPixels_ + 24, screenW_ - 28)
     local panelX = (screenW_ - panelW) * 0.5
     local panelY = 8
     DrawRoundedPanel(ctx, panelX, panelY, panelW, 38, { 27, 27, 58, 230 }, { 33, 189, 174, 210 })
 
-    local hpRate = Clamp(hero_.hp / hero_.maxHp, 0, 1)
-    local hpBufferRate = Clamp((hero_.hpBuffer or hero_.hp) / hero_.maxHp, 0, 1)
-    local hpW = math.min(280, panelW * 0.48)
-    local hpH = 16
-    local hpX = panelX + (panelW - hpW) * 0.5
-    local hpY = panelY + 11
-    nvgBeginPath(ctx)
-    nvgRoundedRect(ctx, hpX - 2, hpY - 2, hpW + 4, hpH + 4, 5)
-    nvgFillColor(ctx, nvgRGBA(8, 7, 16, 255))
-    nvgFill(ctx)
-    nvgBeginPath(ctx)
-    nvgRoundedRect(ctx, hpX, hpY, hpW, hpH, 4)
-    nvgFillColor(ctx, nvgRGBA(18, 42, 24, 255))
-    nvgFill(ctx)
-    nvgBeginPath(ctx)
-    nvgRoundedRect(ctx, hpX, hpY, hpW * hpBufferRate, hpH, 4)
-    nvgFillColor(ctx, nvgRGBA(170, 238, 98, 215))
-    nvgFill(ctx)
-    nvgBeginPath(ctx)
-    nvgRoundedRect(ctx, hpX, hpY, hpW * hpRate, hpH, 4)
-    nvgFillColor(ctx, nvgRGBA(64, 224, 98, 255))
-    nvgFill(ctx)
-    local hpSegments = GetHeroHealthSegments(hero_.maxHp)
-    for i = 1, hpSegments - 1 do
-        local sx = hpX + hpW * i / hpSegments
-        nvgBeginPath(ctx)
-        nvgMoveTo(ctx, sx, hpY + 1)
-        nvgLineTo(ctx, sx, hpY + hpH - 1)
-        nvgStrokeColor(ctx, nvgRGBA(4, 24, 10, 145))
-        nvgStrokeWidth(ctx, 1)
-        nvgStroke(ctx)
-    end
-    nvgBeginPath(ctx)
-    nvgRoundedRect(ctx, hpX, hpY, hpW, hpH, 4)
-    nvgStrokeColor(ctx, nvgRGBA(180, 255, 165, 185))
-    nvgStrokeWidth(ctx, 1.4)
-    nvgStroke(ctx)
     DrawText(ctx, panelX + 58, panelY + 10, 14, "波次 " .. tostring(wave_), { 33, 189, 174, 255 }, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
-    DrawText(ctx, screenW_ * 0.5, hpY + hpH * 0.5, 12, "生命 " .. tostring(hero_.hp) .. "/" .. tostring(hero_.maxHp), { 240, 240, 240, 255 }, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    DrawTurnBanner(ctx, panelX + 108, panelY + 7)
+    local timerX = panelX + 210
+    local timerW = math.max(190, panelW - 390)
+    DrawPlayerTurnTimer(ctx, timerX, panelY + 13, timerW)
     DrawText(ctx, panelX + panelW - 66, panelY + 10, 14, "分数 " .. tostring(score_), { 255, 217, 61, 255 }, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
 
     local hintAlpha = messageTimer_ > 0 and 235 or 170
@@ -1637,47 +1762,53 @@ function DrawRogueRewardPopup(ctx)
     end
 end
 
-function DrawTurnBanner(ctx)
-    if turnBanner_ == nil then return end
-    local maxLife = math.max(0.001, turnBanner_.maxLife or 1.28)
-    local elapsed = maxLife - (turnBanner_.life or 0)
+function DrawTurnBanner(ctx, x, y)
+    local text = currentTurnText_ or "玩家回合"
+    local kind = currentTurnKind_ or "player"
+    local isMonster = kind == "monster"
+    local w = 94
+    local h = 24
+    local maxLife = turnBanner_ ~= nil and math.max(0.001, turnBanner_.maxLife or 0.5) or 0.5
+    local elapsed = turnBanner_ ~= nil and (maxLife - (turnBanner_.life or 0)) or maxLife
     local t = Clamp(elapsed / maxLife, 0, 1)
-    local enterT = Clamp(t / 0.28, 0, 1)
-    local exitT = Clamp((t - 0.62) / 0.38, 0, 1)
-    local easedIn = EaseOutCubic(enterT)
-    local easedOut = exitT * exitT * (3 - 2 * exitT)
+    local pop = turnBanner_ ~= nil and math.sin(Clamp(t, 0, 1) * math.pi) or 0
+    local scale = 1.0 + pop * 0.14
+    local alphaBoost = math.floor(pop * 65)
 
-    local y = screenH_ * 0.28
-    local x = Lerp(-screenW_ * 0.32, screenW_ * 0.5, easedIn)
-    x = Lerp(x, screenW_ * 1.32, easedOut)
-    local alpha = math.floor(255 * Clamp(math.min(enterT * 1.4, (1 - exitT) * 1.35), 0, 1))
-    if alpha <= 0 then return end
+    local mainColor = isMonster and { 255, 94, 78, 255 } or { 96, 232, 255, 255 }
+    local panelColor = isMonster and { 64, 20, 30, 222 } or { 17, 42, 62, 222 }
+    local glowColor = isMonster and { 255, 54, 40, 58 + alphaBoost } or { 33, 189, 174, 58 + alphaBoost }
 
-    local isMonster = turnBanner_.kind == "monster"
-    local mainColor = isMonster and { 255, 86, 72, alpha } or { 90, 230, 255, alpha }
-    local glowColor = isMonster and { 255, 44, 36, math.floor(alpha * 0.34) } or { 33, 189, 174, math.floor(alpha * 0.34) }
-    local panelColor = isMonster and { 56, 18, 28, math.floor(alpha * 0.76) } or { 18, 38, 58, math.floor(alpha * 0.76) }
-    local panelW = math.min(360, screenW_ * 0.54)
-    local panelH = 72
+    local cx = x + w * 0.5
+    local cy = y + h * 0.5
+    nvgSave(ctx)
+    nvgTranslate(ctx, cx, cy)
+    nvgScale(ctx, scale, scale)
+    nvgTranslate(ctx, -cx, -cy)
 
     nvgBeginPath(ctx)
-    nvgRoundedRect(ctx, x - panelW * 0.5, y - panelH * 0.5, panelW, panelH, 16)
+    nvgRoundedRect(ctx, x - 3, y - 3, w + 6, h + 6, 9)
+    nvgFillColor(ctx, nvgRGBA(glowColor[1], glowColor[2], glowColor[3], glowColor[4]))
+    nvgFill(ctx)
+
+    nvgBeginPath(ctx)
+    nvgRoundedRect(ctx, x, y, w, h, 8)
     nvgFillColor(ctx, nvgRGBA(panelColor[1], panelColor[2], panelColor[3], panelColor[4]))
     nvgFill(ctx)
-    nvgStrokeColor(ctx, nvgRGBA(mainColor[1], mainColor[2], mainColor[3], math.floor(alpha * 0.62)))
-    nvgStrokeWidth(ctx, 2.4)
+    nvgStrokeColor(ctx, nvgRGBA(mainColor[1], mainColor[2], mainColor[3], 175 + math.floor(pop * 80)))
+    nvgStrokeWidth(ctx, 1.5 + pop * 0.8)
     nvgStroke(ctx)
 
-    local glow = nvgLinearGradient(ctx, x - panelW * 0.5, y, x + panelW * 0.5, y,
-        nvgRGBA(glowColor[1], glowColor[2], glowColor[3], 0),
-        nvgRGBA(glowColor[1], glowColor[2], glowColor[3], glowColor[4]))
-    nvgBeginPath(ctx)
-    nvgRect(ctx, x - panelW * 0.58, y - panelH * 0.72, panelW * 1.16, panelH * 1.44)
-    nvgFillPaint(ctx, glow)
-    nvgFill(ctx)
+    if pop > 0 then
+        nvgBeginPath(ctx)
+        nvgRoundedRect(ctx, x + 3, y + 3, (w - 6) * EaseOutCubic(pop), h - 6, 6)
+        nvgFillColor(ctx, nvgRGBA(255, 255, 255, math.floor(34 * pop)))
+        nvgFill(ctx)
+    end
 
-    DrawText(ctx, x + 3, y + 3, 34, turnBanner_.text or "", { 0, 0, 0, math.floor(alpha * 0.62) }, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    DrawText(ctx, x, y, 34, turnBanner_.text or "", mainColor, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    DrawText(ctx, x + w * 0.5 + 1, y + h * 0.5 + 1, 13, text, { 0, 0, 0, 118 }, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    DrawText(ctx, x + w * 0.5, y + h * 0.5, 13, text, mainColor, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgRestore(ctx)
 end
 
 function DrawNumberConfigPopup(ctx)
@@ -1741,6 +1872,29 @@ function DrawNumberConfigPopup(ctx)
     DrawText(ctx, x + panelW * 0.5, numberConfig_.confirmRect.y + 19, 16, "确定并重开", { 12, 28, 28, 255 }, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
 end
 
+function DrawStartGamePrompt(ctx)
+    if not startGamePromptVisible_ then
+        startGameButtonRect_ = nil
+        return
+    end
+    local w = math.min(360, screenW_ * 0.52)
+    local h = 86
+    local x = (screenW_ - w) * 0.5
+    local y = (screenH_ - h) * 0.5
+    startGameButtonRect_ = { x = x, y = y, w = w, h = h }
+    local pulse = 0.5 + 0.5 * math.sin(time_ * 3.6)
+
+    nvgBeginPath(ctx)
+    nvgRoundedRect(ctx, x - 10, y - 10, w + 20, h + 20, 22)
+    nvgFillColor(ctx, nvgRGBA(33, 189, 174, 42 + math.floor(pulse * 38)))
+    nvgFill(ctx)
+
+    DrawRoundedPanel(ctx, x, y, w, h, { 20, 34, 58, 246 }, { 255, 217, 61, 235 })
+    DrawText(ctx, x + w * 0.5 + 2, y + h * 0.5 + 2, 34, "开始游戏", { 0, 0, 0, 170 }, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    DrawText(ctx, x + w * 0.5, y + h * 0.5, 34, "开始游戏", { 255, 244, 132, 255 }, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    DrawText(ctx, x + w * 0.5, y + h + 22, 14, "点击后开始倒计时", { 220, 238, 238, 225 }, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+end
+
 function DrawGameOver(ctx)
     if gameState_ ~= "gameover" then return end
     nvgBeginPath(ctx)
@@ -1770,10 +1924,11 @@ function HandleNanoVGRender(eventType, eventData)
     DrawItemTurnBadgesUI(vg_)
     DrawHud(vg_)
     DrawHudDamageParticles(vg_)
-    DrawTurnBanner(vg_)
     DrawLeaderboardPopup(vg_)
     DrawRogueRewardPopup(vg_)
+    DrawStartGamePrompt(vg_)
     DrawNumberConfigPopup(vg_)
     DrawGameOver(vg_)
     nvgEndFrame(vg_)
+    StartPendingPlayerTurnTimerAfterRender()
 end
